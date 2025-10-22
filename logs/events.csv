@@ -109,3 +109,11 @@ event_time,event_name,user_id,session_id,news_id,term,source,surface,message,pay
 2025-10-22T08:41:59.688334+00:00,news_click,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
 2025-10-22T08:41:59.771674+00:00,news_detail_open,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
 2025-10-22T08:42:00.703972+00:00,news_detail_back,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,,detail,,{}
+2025-10-22T09:05:18.843462+00:00,session_start,user_cea7d5c3,sess_610e2061d4fc,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T09:06:59.646476+00:00,session_start,user_cea7d5c3,sess_6e7461c87122,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T09:08:08.369997+00:00,session_start,user_cea7d5c3,sess_308ebb5f3e13,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T09:10:28.001411+00:00,session_start,user_cea7d5c3,sess_f5bcef4afb13,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T09:10:32.426368+00:00,news_click,user_cea7d5c3,sess_f5bcef4afb13,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-22T09:10:32.476430+00:00,news_detail_open,user_cea7d5c3,sess_f5bcef4afb13,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-22T09:10:37.546541+00:00,glossary_click,user_cea7d5c3,sess_f5bcef4afb13,1,기준금리,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-22T09:10:37.546541+00:00,glossary_answer,user_cea7d5c3,sess_f5bcef4afb13,,기준금리,news_highlight,detail,,"{""answer_len"": 208}"
