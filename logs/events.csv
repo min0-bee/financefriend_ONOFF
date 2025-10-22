@@ -101,3 +101,11 @@ event_time,event_name,user_id,session_id,news_id,term,source,surface,message,pay
 2025-10-22T08:23:15.772777+00:00,news_detail_open,user_cea7d5c3,sess_15df213bb8c5,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
 2025-10-22T08:23:20.219655+00:00,glossary_click,user_cea7d5c3,sess_15df213bb8c5,2,PER,news_highlight,detail,,"{""click_count"": 1}"
 2025-10-22T08:23:20.230229+00:00,glossary_answer,user_cea7d5c3,sess_15df213bb8c5,,PER,news_highlight,detail,,"{""answer_len"": 212}"
+2025-10-22T08:39:35.877222+00:00,session_start,user_cea7d5c3,sess_25395dbfea50,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T08:41:55.293089+00:00,session_start,user_cea7d5c3,sess_5a2ffc5bd6e7,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T08:41:56.465452+00:00,news_click,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:41:56.552335+00:00,news_detail_open,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:41:58.783861+00:00,news_detail_back,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,,detail,,{}
+2025-10-22T08:41:59.688334+00:00,news_click,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:41:59.771674+00:00,news_detail_open,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:42:00.703972+00:00,news_detail_back,user_cea7d5c3,sess_5a2ffc5bd6e7,2,,,detail,,{}
