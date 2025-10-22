@@ -81,3 +81,23 @@ event_time,event_name,user_id,session_id,news_id,term,source,surface,message,pay
 2025-10-22T04:31:21.997911+00:00,glossary_click,user_cea7d5c3,sess_27d705afd78c,2,PER,news_highlight,detail,,"{""via"": ""query_param""}"
 2025-10-22T04:31:21.997911+00:00,glossary_answer,user_cea7d5c3,sess_27d705afd78c,2,PER,news_highlight,detail,,"{""answer_len"": 177}"
 2025-10-22T04:31:22.003054+00:00,news_detail_open,user_cea7d5c3,sess_27d705afd78c,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T07:53:03.224615+00:00,session_start,user_cea7d5c3,sess_d818de4602fe,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T07:53:15.278924+00:00,news_click,user_cea7d5c3,sess_d818de4602fe,3,,list,home,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-22T07:53:15.337898+00:00,news_detail_open,user_cea7d5c3,sess_d818de4602fe,3,,,detail,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-22T07:53:17.814201+00:00,glossary_click,user_cea7d5c3,sess_d818de4602fe,3,환율,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-22T07:53:17.815233+00:00,glossary_answer,user_cea7d5c3,sess_d818de4602fe,,환율,news_highlight,detail,,"{""answer_len"": 175}"
+2025-10-22T07:53:25.929740+00:00,chat_question,user_cea7d5c3,sess_d818de4602fe,,,chat,sidebar,체크,{}
+2025-10-22T07:53:25.929740+00:00,chat_response,user_cea7d5c3,sess_d818de4602fe,,,chat,sidebar,,"{""answer_len"": 120, ""latency_ms"": 0}"
+2025-10-22T07:53:25.938679+00:00,chat_response,user_cea7d5c3,sess_d818de4602fe,,,chat,sidebar,,"{""answer_len"": 120}"
+2025-10-22T08:00:55.254685+00:00,session_start,user_cea7d5c3,sess_2fb3dd449185,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T08:00:59.853562+00:00,news_click,user_cea7d5c3,sess_2fb3dd449185,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:00:59.950160+00:00,news_detail_open,user_cea7d5c3,sess_2fb3dd449185,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:01:04.202339+00:00,news_detail_back,user_cea7d5c3,sess_2fb3dd449185,2,,,detail,,{}
+2025-10-22T08:01:05.233616+00:00,news_click,user_cea7d5c3,sess_2fb3dd449185,3,,list,home,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-22T08:01:05.300249+00:00,news_detail_open,user_cea7d5c3,sess_2fb3dd449185,3,,,detail,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-22T08:01:06.655460+00:00,news_detail_back,user_cea7d5c3,sess_2fb3dd449185,3,,,detail,,{}
+2025-10-22T08:23:09.467322+00:00,session_start,user_cea7d5c3,sess_15df213bb8c5,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-22T08:23:15.671894+00:00,news_click,user_cea7d5c3,sess_15df213bb8c5,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:23:15.772777+00:00,news_detail_open,user_cea7d5c3,sess_15df213bb8c5,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-22T08:23:20.219655+00:00,glossary_click,user_cea7d5c3,sess_15df213bb8c5,2,PER,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-22T08:23:20.230229+00:00,glossary_answer,user_cea7d5c3,sess_15df213bb8c5,,PER,news_highlight,detail,,"{""answer_len"": 212}"
