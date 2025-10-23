@@ -117,3 +117,35 @@ event_time,event_name,user_id,session_id,news_id,term,source,surface,message,pay
 2025-10-22T09:10:32.476430+00:00,news_detail_open,user_cea7d5c3,sess_f5bcef4afb13,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
 2025-10-22T09:10:37.546541+00:00,glossary_click,user_cea7d5c3,sess_f5bcef4afb13,1,기준금리,news_highlight,detail,,"{""click_count"": 1}"
 2025-10-22T09:10:37.546541+00:00,glossary_answer,user_cea7d5c3,sess_f5bcef4afb13,,기준금리,news_highlight,detail,,"{""answer_len"": 208}"
+2025-10-22T09:11:21.861351+00:00,session_start,user_cea7d5c3,sess_6f6636041d8f,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T01:16:12.438009+00:00,session_start,user_cea7d5c3,sess_89078d88fa6f,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T01:16:21.019516+00:00,chat_question,user_cea7d5c3,sess_89078d88fa6f,,,chat,sidebar,환율이 뭐야,{}
+2025-10-23T01:16:21.019516+00:00,glossary_answer,user_cea7d5c3,sess_89078d88fa6f,,환율,chat,sidebar,,"{""answer_len"": 175}"
+2025-10-23T01:16:21.019516+00:00,chat_response,user_cea7d5c3,sess_89078d88fa6f,,,chat,sidebar,,"{""answer_len"": 175, ""latency_ms"": 5}"
+2025-10-23T01:47:15.497629+00:00,session_start,user_cea7d5c3,sess_51f67763747e,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:01:16.412031+00:00,session_start,user_cea7d5c3,sess_b184672d8a4e,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:10:02.794162+00:00,session_start,user_cea7d5c3,sess_ea0a21b65301,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:10:25.706618+00:00,news_click,user_cea7d5c3,sess_ea0a21b65301,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-23T02:10:25.771755+00:00,news_detail_open,user_cea7d5c3,sess_ea0a21b65301,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-23T02:10:36.991485+00:00,news_detail_back,user_cea7d5c3,sess_ea0a21b65301,1,,,detail,,{}
+2025-10-23T02:10:38.197995+00:00,news_click,user_cea7d5c3,sess_ea0a21b65301,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-23T02:10:38.248825+00:00,news_detail_open,user_cea7d5c3,sess_ea0a21b65301,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-23T02:10:43.947341+00:00,glossary_click,user_cea7d5c3,sess_ea0a21b65301,2,PER,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-23T02:10:43.947341+00:00,glossary_answer,user_cea7d5c3,sess_ea0a21b65301,,PER,news_highlight,detail,,"{""answer_len"": 212}"
+2025-10-23T02:11:42.804100+00:00,chat_question,user_cea7d5c3,sess_ea0a21b65301,,,chat,sidebar,연결,{}
+2025-10-23T02:11:42.806107+00:00,chat_response,user_cea7d5c3,sess_ea0a21b65301,,,chat,sidebar,,"{""answer_len"": 97, ""latency_ms"": 0}"
+2025-10-23T02:11:54.222626+00:00,session_start,user_cea7d5c3,sess_01ccca17cbe4,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:11:59.332454+00:00,chat_question,user_cea7d5c3,sess_01ccca17cbe4,,,chat,sidebar,안녕,{}
+2025-10-23T02:11:59.333462+00:00,chat_response,user_cea7d5c3,sess_01ccca17cbe4,,,chat,sidebar,,"{""answer_len"": 97, ""latency_ms"": 1}"
+2025-10-23T02:12:16.820329+00:00,session_start,user_cea7d5c3,sess_94d3ab3c610d,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:12:22.433255+00:00,chat_question,user_cea7d5c3,sess_94d3ab3c610d,,,chat,sidebar,안녕,{}
+2025-10-23T02:12:22.433255+00:00,chat_response,user_cea7d5c3,sess_94d3ab3c610d,,,chat,sidebar,,"{""answer_len"": 89, ""latency_ms"": 0}"
+2025-10-23T02:14:42.329598+00:00,session_start,user_cea7d5c3,sess_d2f24db808af,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:14:45.511064+00:00,chat_question,user_cea7d5c3,sess_d2f24db808af,,,chat,sidebar,안녕,{}
+2025-10-23T02:14:46.465902+00:00,chat_response,user_cea7d5c3,sess_d2f24db808af,,,chat,sidebar,,"{""answer_len"": 112, ""latency_ms"": 955}"
+2025-10-23T02:14:54.212466+00:00,chat_question,user_cea7d5c3,sess_d2f24db808af,,,chat,sidebar,반가워,{}
+2025-10-23T02:14:54.213481+00:00,chat_response,user_cea7d5c3,sess_d2f24db808af,,,chat,sidebar,,"{""answer_len"": 112, ""latency_ms"": 1}"
+2025-10-23T02:20:33.885782+00:00,session_start,user_cea7d5c3,sess_cb7b7db64d53,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T02:20:40.441133+00:00,chat_question,user_cea7d5c3,sess_cb7b7db64d53,,,chat,sidebar,안녕,{}
+2025-10-23T02:20:40.442407+00:00,chat_response,user_cea7d5c3,sess_cb7b7db64d53,,,chat,sidebar,,"{""answer_len"": 112, ""latency_ms"": 0}"
+2025-10-23T02:22:23.368009+00:00,session_start,user_cea7d5c3,sess_3969d1e4477b,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
