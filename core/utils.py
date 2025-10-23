@@ -4,6 +4,7 @@ import json
 import pandas as pd
 from datetime import datetime, timezone
 from core.config import LOG_DIR, LOG_FILE
+from openai import OpenAI
 
 # ─────────────────────────────────────────────────────────────
 # 🕓 (1) 현재 UTC 시각을 ISO 형식 문자열로 반환
@@ -134,22 +135,30 @@ def load_logs_as_df(log_file: str) -> pd.DataFrame:
 
 _openai_client = None
 
-def get_openai_client(api_key : str = None):
+def get_openai_client(api_key: str = None):
     """
     OpenAI Python SDK v1.x 클라이언트 생성 (싱글톤)
+    - 환경변수/Streamlit secrets에서 키를 찾고, 없으면 None 반환
     """
     global _openai_client
-    if _openai_client is None:
-        from openai import OpenAI
-        api_key = api_key or os.getnv("OPENAI_API_KEY")
-        try:
-            import streamlit as st
-            if not api_key and "OPENAI_API_KEY" in st.secrets:
-                api_key = st.secrets["OPENAI_API_KEY"]
-        except Exception:
-            pass
-        _openai_client = openAI(api_key=api_key)
+    if _openai_client is not None:
+        return _openai_client
 
+    # 1) 우선순위: 전달 인자 → 환경변수 → st.secrets
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    try:
+        import streamlit as st
+        if not key and "OPENAI_API_KEY" in st.secrets:
+            key = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        pass
+
+    # 2) 키가 없으면 연결 건너뛰기
+    if not key:
+        return None
+
+    # 3) 정상 생성
+    _openai_client = OpenAI(api_key=key)
     return _openai_client
 
 
@@ -205,3 +214,106 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
 
     # ✅ 5. 응답에서 모델의 텍스트 추출
     return resp.choices[0].message.content.strip()
+
+
+# === LLM 연결 진단 패널 ===
+def render_llm_diagnostics():
+    import os, importlib, sys
+    import streamlit as st
+
+    st.markdown("### 🧪 LLM 연결 진단")
+    problems = []
+
+    # 1) openai 패키지 제대로 import 되는지
+    try:
+        import openai  # 패키지 모듈 (v1에서도 모듈명은 openai)
+        st.write("✅ `import openai` OK", getattr(openai, "__version__", "unknown"))
+    except Exception as e:
+        st.error(f"❌ `import openai` 실패: {e}")
+        problems.append("openai import 실패")
+
+    # 2) 프로젝트에 openai.py / openai 폴더로 **이름충돌** 있는지
+    import glob, os
+    here = os.path.abspath(os.getcwd())
+    shadow = []
+    for pattern in ["openai.py", "openai/__init__.py"]:
+        for p in glob.glob(os.path.join(here, "**", pattern), recursive=True):
+            shadow.append(p)
+    if shadow:
+        st.error("❌ 프로젝트 안에 `openai` 이름 충돌 가능성:", icon="🚫")
+        for p in shadow:
+            st.code(p)
+        problems.append("로컬 파일/폴더 이름충돌(openai)")
+    else:
+        st.write("✅ 프로젝트 내 이름충돌 없음")
+
+    # 3) config 값 확인
+    try:
+        from core import config
+        st.write("✅ `from core import config` OK")
+        st.write({
+            "DEFAULT_OPENAI_MODEL": getattr(config, "DEFAULT_OPENAI_MODEL", None),
+            "USE_OPENAI": getattr(config, "USE_OPENAI", None),
+            "OPENAI_API_KEY in config (bool)": bool(getattr(config, "OPENAI_API_KEY", None)),
+        })
+    except Exception as e:
+        st.error(f"❌ config import 실패: {e}")
+        problems.append("config import 실패")
+
+    # 4) 환경변수 확인 (현재 프로세스)
+    st.write({
+        "env.OPENAI_API_KEY": bool(os.getenv("OPENAI_API_KEY")),
+    })
+
+    # 5) .streamlit/secrets.toml 읽히는지
+    try:
+        import streamlit as st
+        st.write({
+            "secrets.has_OPENAI_API_KEY": ("OPENAI_API_KEY" in st.secrets),
+            "secrets.has_OPENAI_MODEL": ("OPENAI_MODEL" in st.secrets),
+        })
+    except Exception as e:
+        st.warning(f"secrets 접근 경고: {e}")
+
+    # 6) OpenAI v1 클라이언트 생성 & 간이 호출
+    try:
+        from openai import OpenAI
+        api_key = getattr(config, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            st.error("❌ API 키 없음: config.OPENAI_API_KEY 또는 env.OPENAI_API_KEY가 비어있음")
+            problems.append("API 키 없음")
+        else:
+            client = OpenAI(api_key=api_key)
+            st.write("✅ OpenAI 클라이언트 생성 OK")
+            # 모델 핑(가벼운 호출): 모델 리스트 혹은 최소 chat 호출 시그니처 확인
+            try:
+                # 가장 가벼운 확인: 모델 리스트
+                _ = client.models.list()
+                st.write("✅ `client.models.list()` OK")
+            except Exception as e:
+                st.warning(f"⚠️ models.list 경고: {e}")
+            # 짧은 채팅 호출 시도 (모델명은 config 사용)
+            try:
+                mdl = getattr(config, "DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
+                resp = client.chat.completions.create(
+                    model=mdl,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=5,
+                )
+                txt = resp.choices[0].message.content.strip()
+                st.success(f"✅ chat.completions 응답 OK: {txt!r}")
+            except Exception as e:
+                st.error(f"❌ chat.completions 실패: {e}")
+                problems.append("chat.completions 실패")
+    except Exception as e:
+        st.error(f"❌ OpenAI 클라이언트 생성 실패: {e}")
+        problems.append("OpenAI 클라이언트 생성 실패")
+
+    if problems:
+        st.markdown("**요약 (의심 포인트)**: " + ", ".join(problems))
+    else:
+        st.success("🎉 진단상 문제 없음")
+
+# 👉 호출 위치 예시
+# with st.sidebar:
+#     render_llm_diagnostics()

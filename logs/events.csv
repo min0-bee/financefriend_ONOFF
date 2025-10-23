@@ -149,3 +149,29 @@ event_time,event_name,user_id,session_id,news_id,term,source,surface,message,pay
 2025-10-23T02:20:40.441133+00:00,chat_question,user_cea7d5c3,sess_cb7b7db64d53,,,chat,sidebar,안녕,{}
 2025-10-23T02:20:40.442407+00:00,chat_response,user_cea7d5c3,sess_cb7b7db64d53,,,chat,sidebar,,"{""answer_len"": 112, ""latency_ms"": 0}"
 2025-10-23T02:22:23.368009+00:00,session_start,user_cea7d5c3,sess_3969d1e4477b,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:42:08.440663+00:00,session_start,user_cea7d5c3,sess_37a61aa30d58,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:42:13.757250+00:00,chat_question,user_cea7d5c3,sess_37a61aa30d58,,,chat,sidebar,안녕,{}
+2025-10-23T04:42:13.758254+00:00,chat_response,user_cea7d5c3,sess_37a61aa30d58,,,chat,sidebar,,"{""answer_len"": 205, ""latency_ms"": 1}"
+2025-10-23T04:44:07.093474+00:00,session_start,user_cea7d5c3,sess_0c8229dd9083,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:44:09.483675+00:00,chat_question,user_cea7d5c3,sess_0c8229dd9083,,,chat,sidebar,안녕,{}
+2025-10-23T04:44:10.133230+00:00,chat_response,user_cea7d5c3,sess_0c8229dd9083,,,chat,sidebar,,"{""answer_len"": 120, ""latency_ms"": 649}"
+2025-10-23T04:44:14.444308+00:00,chat_question,user_cea7d5c3,sess_0c8229dd9083,,,chat,sidebar,안녕,{}
+2025-10-23T04:44:14.445310+00:00,chat_response,user_cea7d5c3,sess_0c8229dd9083,,,chat,sidebar,,"{""answer_len"": 120, ""latency_ms"": 0}"
+2025-10-23T04:49:44.822380+00:00,session_start,user_cea7d5c3,sess_dbdb38745a98,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:49:48.037036+00:00,chat_question,user_cea7d5c3,sess_dbdb38745a98,,,chat,sidebar,안녕,{}
+2025-10-23T04:49:48.037036+00:00,chat_response,user_cea7d5c3,sess_dbdb38745a98,,,chat,sidebar,,"{""answer_len"": 112, ""latency_ms"": 0}"
+2025-10-23T04:51:19.788664+00:00,session_start,user_cea7d5c3,sess_a39c5ef6732d,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:51:22.097768+00:00,chat_question,user_cea7d5c3,sess_a39c5ef6732d,,,chat,sidebar,안녕,{}
+2025-10-23T04:51:22.097768+00:00,chat_response,user_cea7d5c3,sess_a39c5ef6732d,,,chat,sidebar,,"{""answer_len"": 112, ""latency_ms"": 0}"
+2025-10-23T04:55:01.866171+00:00,session_start,user_cea7d5c3,sess_269c080f9cbb,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:55:04.240053+00:00,chat_question,user_cea7d5c3,sess_269c080f9cbb,,,chat,sidebar,안녕,{}
+2025-10-23T04:55:04.240566+00:00,chat_response,user_cea7d5c3,sess_269c080f9cbb,,,chat,sidebar,,"{""answer_len"": 125, ""latency_ms"": 5}"
+2025-10-23T04:58:55.667612+00:00,session_start,user_cea7d5c3,sess_f3926fce8647,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:59:03.165604+00:00,chat_question,user_cea7d5c3,sess_f3926fce8647,,,chat,sidebar,안녕,{}
+2025-10-23T04:59:03.166609+00:00,chat_response,user_cea7d5c3,sess_f3926fce8647,,,chat,sidebar,,"{""answer_len"": 125, ""latency_ms"": 2}"
+2025-10-23T04:59:23.622742+00:00,session_start,user_cea7d5c3,sess_c3c8dd60a67e,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T04:59:33.491527+00:00,session_start,user_cea7d5c3,sess_971a816f8f30,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T05:00:03.403301+00:00,session_start,user_cea7d5c3,sess_55add0a3a281,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T05:03:30.219339+00:00,session_start,user_cea7d5c3,sess_e1ba6a2c8ccd,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-23T05:03:35.567119+00:00,chat_question,user_cea7d5c3,sess_e1ba6a2c8ccd,,,chat,sidebar,안녕,{}
+2025-10-23T05:03:41.465265+00:00,chat_response,user_cea7d5c3,sess_e1ba6a2c8ccd,,,chat,sidebar,,"{""answer_len"": 222, ""latency_ms"": 5894}"

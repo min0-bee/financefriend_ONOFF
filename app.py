@@ -3,7 +3,7 @@
 import streamlit as st
 from core.config import USE_OPENAI
 from core.init_app import init_app
-from core.utils import load_logs_as_df
+from core.utils import load_logs_as_df, render_llm_diagnostics
 from ui.styles import inject_styles
 from ui.components.summary_box import render as SummaryBox
 
@@ -14,6 +14,7 @@ from ui.components.article_detail import render as ArticleDetail
 from ui.components.chat_panel import render as ChatPanel
 from ui.components.sidebar import render as Sidebar
 from ui.components.log_viewer import render as LogViewer
+
 
 
 # 📄 페이지 설정: 전체 레이아웃 및 기본 제목
@@ -64,10 +65,13 @@ def main():
 
     # ⑤ 왼쪽 사이드바: 용어 목록, 설정, 사용법
     Sidebar(st.session_state.financial_terms)
-
+    
+    with st.sidebar:
+        render_llm_diagnostics()
     # ⑥ 하단: 내부 분석용 로그 뷰어
     st.markdown("---")
     LogViewer()
+
 
 
 # 🔧 Streamlit 실행 진입점

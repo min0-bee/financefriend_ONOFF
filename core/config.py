@@ -5,9 +5,9 @@ LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "events.csv")
 USER_FILE = os.path.join(LOG_DIR, "user_info.json")
 
-
-# OpenAI 연결 여부 (MVP: False)
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 USE_OPENAI = True
+OPENAI_API_KEY = None
 
 # Streamlit Secrets가 있으면 그것을 우선 사용
 try:
