@@ -1,6 +1,6 @@
-
-import streamlit as st
+import time
 from datetime import datetime
+import streamlit as st
 from core.logger import log_event
 from rag.glossary import highlight_terms, explain_term
 
@@ -10,24 +10,59 @@ def render():
         st.warning("선택된 기사가 없습니다.")
         return
 
+    # ✅ 최초 진입 시에만 기사 렌더 latency 측정
     if not st.session_state.get("detail_enter_logged"):
-        log_event("news_detail_open", news_id=article.get("id"), surface="detail", payload={"title": article.get("title")})
+        t0 = time.time()
+
+        # # 렌더 시작 로그
+        # log_event(
+        #     "news_detail_open_start",
+        #     news_id=article.get("id"),
+        #     surface="detail",
+        #     title=article.get("title"),
+        #     note="기사 렌더링 시작"
+        # )
+
+        # 실제 렌더링
+        st.markdown("---")
+        st.header(article['title'])
+        st.caption(f"📅 {article['date']}")
+        st.markdown('<div class="article-content">', unsafe_allow_html=True)
+        st.markdown(highlight_terms(article['content']), unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # 렌더 완료 → latency 기록
+        latency_ms = int((time.time() - t0) * 1000)
+        log_event(
+            "news_detail_open",
+            news_id=article.get("id"),
+            surface="detail",
+            title=article.get("title"),
+            latency_ms=latency_ms,
+            note="기사 렌더링 완료",
+        )
+
+        # 플래그 설정(중복 기록 방지)
         st.session_state.detail_enter_logged = True
         st.session_state.page_enter_time = datetime.now()
 
+    else:
+        # 재렌더 시에는 단순 표시만 (latency 미측정)
+        st.markdown("---")
+        st.header(article['title'])
+        st.caption(f"📅 {article['date']}")
+        st.markdown('<div class="article-content">', unsafe_allow_html=True)
+        st.markdown(highlight_terms(article['content']), unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ← 목록으로
     if st.button("← 뉴스 목록으로 돌아가기"):
         log_event("news_detail_back", news_id=article.get("id"), surface="detail")
         st.session_state.selected_article = None
         st.session_state.detail_enter_logged = False
         st.rerun()
 
-    st.markdown("---")
-    st.header(article['title'])
-    st.caption(f"📅 {article['date']}")
-    st.markdown('<div class="article-content">', unsafe_allow_html=True)
-    st.markdown(highlight_terms(article['content']), unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
+    # 용어 설명 UI
     st.info("💡 아래 버튼에서 용어를 선택하면 챗봇이 쉽게 설명해드립니다!")
     st.subheader("🔍 용어 설명 요청")
 
@@ -40,10 +75,43 @@ def render():
                 with col:
                     if st.button(f"📌 {term}", key=f"term_btn_{term}", use_container_width=True):
                         st.session_state.term_click_count += 1
-                        log_event("glossary_click", term=term, news_id=article.get("id"), source="news_highlight", surface="detail", payload={"click_count": st.session_state.term_click_count})
-                        st.session_state.chat_history.append({"role": "user", "content": f"'{term}' 용어를 설명해주세요"})
+
+                        # 클릭 → 설명 생성까지 latency 측정
+                        t0 = time.time()
+
+                        user_question = f"'{term}' 용어를 설명해주세요"
+                        # 대화 히스토리 (사용자 발화 1회만 기록)
+                        st.session_state.chat_history.append({"role": "user", "content": user_question})
+
+                        # 설명 생성
                         explanation = explain_term(term, st.session_state.chat_history)
+                        latency_ms = int((time.time() - t0) * 1000)
+
+                        # 클릭(자동 질문 포함) 이벤트 로그
+                        log_event(
+                            "glossary_click",
+                            term=term,
+                            news_id=article.get("id"),
+                            source="news_highlight",
+                            surface="detail",
+                            message=user_question,              # 자동 생성된 질문
+                            click_count=st.session_state.term_click_count,
+                            latency_ms=latency_ms
+                        )
+
+                        # 답변 히스토리 + 답변 이벤트 로그
                         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
-                        log_event("glossary_answer", term=term, source="news_highlight", surface="detail", payload={"answer_len": len(explanation)})
+                        log_event(
+                            "glossary_answer",
+                            term=term,
+                            source="news_highlight",
+                            surface="detail",
+                            message=explanation,                # 설명 본문
+                            answer_len=len(explanation),
+                            latency_ms=latency_ms,
+                            via="glossary"
+                        )
+
                         st.rerun()
+
     st.caption("💡 Tip: 버튼을 누르면 오른쪽 챗봇에서 상세 설명을 볼 수 있어요!")
