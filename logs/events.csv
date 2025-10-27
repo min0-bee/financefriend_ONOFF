@@ -175,3 +175,140 @@ event_time,event_name,user_id,session_id,news_id,term,source,surface,message,pay
 2025-10-23T05:03:30.219339+00:00,session_start,user_cea7d5c3,sess_e1ba6a2c8ccd,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
 2025-10-23T05:03:35.567119+00:00,chat_question,user_cea7d5c3,sess_e1ba6a2c8ccd,,,chat,sidebar,안녕,{}
 2025-10-23T05:03:41.465265+00:00,chat_response,user_cea7d5c3,sess_e1ba6a2c8ccd,,,chat,sidebar,,"{""answer_len"": 222, ""latency_ms"": 5894}"
+2025-10-23T06:00:49.541839+00:00,session_start,user_cea7d5c3,sess_f488dc352bb6,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-24T00:49:46.028487+00:00,session_start,user_cea7d5c3,sess_f6fca328e8b6,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-24T00:50:47.676776+00:00,news_click,user_cea7d5c3,sess_f6fca328e8b6,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-24T00:50:49.450579+00:00,news_detail_open,user_cea7d5c3,sess_f6fca328e8b6,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-24T00:52:55.810292+00:00,news_detail_back,user_cea7d5c3,sess_f6fca328e8b6,1,,,detail,,{}
+2025-10-24T00:53:24.378738+00:00,news_click,user_cea7d5c3,sess_f6fca328e8b6,3,,list,home,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-24T00:53:24.801588+00:00,news_detail_open,user_cea7d5c3,sess_f6fca328e8b6,3,,,detail,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-24T00:53:37.148984+00:00,glossary_click,user_cea7d5c3,sess_f6fca328e8b6,3,환율,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-24T00:53:37.473029+00:00,glossary_answer,user_cea7d5c3,sess_f6fca328e8b6,,환율,news_highlight,detail,,"{""answer_len"": 247}"
+2025-10-24T04:24:03.806788+00:00,session_start,user_cea7d5c3,sess_0cd9b61993b7,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-24T04:24:11.796250+00:00,news_click,user_cea7d5c3,sess_0cd9b61993b7,3,,list,home,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-24T04:24:13.021901+00:00,news_detail_open,user_cea7d5c3,sess_0cd9b61993b7,3,,,detail,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-24T04:25:09.807796+00:00,glossary_click,user_cea7d5c3,sess_0cd9b61993b7,3,환율,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-24T04:25:10.472476+00:00,glossary_answer,user_cea7d5c3,sess_0cd9b61993b7,,환율,news_highlight,detail,,"{""answer_len"": 247}"
+2025-10-24T04:26:08.379185+00:00,chat_question,user_cea7d5c3,sess_0cd9b61993b7,,,chat,sidebar,연결 재무제표,{}
+2025-10-24T04:26:15.514599+00:00,chat_response,user_cea7d5c3,sess_0cd9b61993b7,,,chat,sidebar,,"{""answer_len"": 365, ""latency_ms"": 7137}"
+2025-10-24T04:26:28.406522+00:00,chat_question,user_cea7d5c3,sess_0cd9b61993b7,,,chat,sidebar,연결재무제표,{}
+2025-10-24T04:26:31.273725+00:00,chat_response,user_cea7d5c3,sess_0cd9b61993b7,,,chat,sidebar,,"{""answer_len"": 354, ""latency_ms"": 2870}"
+2025-10-24T04:28:54.487739+00:00,news_detail_back,user_cea7d5c3,sess_0cd9b61993b7,3,,,detail,,{}
+2025-10-24T04:29:33.503890+00:00,news_click,user_cea7d5c3,sess_0cd9b61993b7,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-24T04:29:34.292946+00:00,news_detail_open,user_cea7d5c3,sess_0cd9b61993b7,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-24T04:29:51.209516+00:00,news_detail_back,user_cea7d5c3,sess_0cd9b61993b7,1,,,detail,,{}
+2025-10-24T04:34:41.329794+00:00,news_click,user_cea7d5c3,sess_0cd9b61993b7,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-24T04:34:42.200375+00:00,news_detail_open,user_cea7d5c3,sess_0cd9b61993b7,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-24T04:45:11.458999+00:00,news_detail_back,user_cea7d5c3,sess_0cd9b61993b7,1,,,detail,,{}
+2025-10-24T04:46:19.944426+00:00,session_start,user_cea7d5c3,sess_cbc860ea86ad,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-26T16:35:05.640896+00:00,session_start,user_cea7d5c3,sess_524077d594d6,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-26T16:35:37.739327+00:00,news_click,user_cea7d5c3,sess_524077d594d6,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:35:38.048411+00:00,news_detail_open,user_cea7d5c3,sess_524077d594d6,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:35:59.467433+00:00,news_detail_back,user_cea7d5c3,sess_524077d594d6,1,,,detail,,{}
+2025-10-26T16:36:46.332995+00:00,news_click,user_cea7d5c3,sess_524077d594d6,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:36:46.550570+00:00,news_detail_open,user_cea7d5c3,sess_524077d594d6,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:42:48.492788+00:00,news_detail_back,user_cea7d5c3,sess_524077d594d6,1,,,detail,,{}
+2025-10-26T16:49:42.626269+00:00,news_click,user_cea7d5c3,sess_524077d594d6,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:49:42.923011+00:00,news_detail_open,user_cea7d5c3,sess_524077d594d6,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:49:53.902060+00:00,news_detail_back,user_cea7d5c3,sess_524077d594d6,1,,,detail,,{}
+2025-10-26T16:50:12.563425+00:00,session_start,user_cea7d5c3,sess_daefdf2773c4,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-26T16:50:51.272425+00:00,news_click,user_cea7d5c3,sess_daefdf2773c4,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-26T16:50:51.518219+00:00,news_detail_open,user_cea7d5c3,sess_daefdf2773c4,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-26T16:51:39.263093+00:00,news_detail_back,user_cea7d5c3,sess_daefdf2773c4,2,,,detail,,{}
+2025-10-26T16:54:10.355176+00:00,session_start,user_cea7d5c3,sess_5f27eebf922d,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-26T16:54:11.907964+00:00,news_click,user_cea7d5c3,sess_5f27eebf922d,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:54:12.206598+00:00,news_detail_open,user_cea7d5c3,sess_5f27eebf922d,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-26T16:54:24.013668+00:00,glossary_click,user_cea7d5c3,sess_5f27eebf922d,1,금리,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-26T16:54:24.115162+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,금리,news_highlight,detail,,"{""answer_len"": 219}"
+2025-10-26T16:55:11.089390+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,금리,{}
+2025-10-26T16:55:11.219339+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,투자,chat_rag,sidebar,,"{""answer_len"": 219, ""query"": ""금리""}"
+2025-10-26T16:55:11.222006+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 219, ""latency_ms"": 131}"
+2025-10-26T16:55:18.095573+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,기준금리,{}
+2025-10-26T16:55:18.217478+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,기준금리,chat_rag,sidebar,,"{""answer_len"": 300, ""query"": ""기준금리""}"
+2025-10-26T16:55:18.219478+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 300, ""latency_ms"": 124}"
+2025-10-26T16:56:35.212956+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,기준 금리,{}
+2025-10-26T16:56:35.322499+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,기준금리,chat_rag,sidebar,,"{""answer_len"": 300, ""query"": ""기준 금리""}"
+2025-10-26T16:56:35.324499+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 300, ""latency_ms"": 112}"
+2025-10-26T16:56:55.063476+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,금리,{}
+2025-10-26T16:56:55.172498+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,투자,chat_rag,sidebar,,"{""answer_len"": 219, ""query"": ""금리""}"
+2025-10-26T16:56:55.174498+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 219, ""latency_ms"": 111}"
+2025-10-26T16:59:49.863567+00:00,news_detail_back,user_cea7d5c3,sess_5f27eebf922d,1,,,detail,,{}
+2025-10-26T17:00:28.496556+00:00,chat_reset,user_cea7d5c3,sess_5f27eebf922d,,,,sidebar,,{}
+2025-10-26T17:00:34.778604+00:00,news_click,user_cea7d5c3,sess_5f27eebf922d,2,,list,home,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-26T17:00:35.014165+00:00,news_detail_open,user_cea7d5c3,sess_5f27eebf922d,2,,,detail,,"{""title"": ""삼성전자, 분기 배당 20% 증액 발표""}"
+2025-10-26T17:00:39.717451+00:00,glossary_click,user_cea7d5c3,sess_5f27eebf922d,2,배당,news_highlight,detail,,"{""click_count"": 2}"
+2025-10-26T17:00:39.728740+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,배당,news_highlight,detail,,"{""answer_len"": 299}"
+2025-10-26T17:00:45.670258+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,금리,{}
+2025-10-26T17:00:45.688861+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,금리,chat_rag,sidebar,,"{""answer_len"": 226, ""query"": ""금리""}"
+2025-10-26T17:00:45.690827+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 226, ""latency_ms"": 20}"
+2025-10-26T17:00:50.392317+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,기준 금리,{}
+2025-10-26T17:00:50.412747+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,금리,chat_rag,sidebar,,"{""answer_len"": 226, ""query"": ""기준 금리""}"
+2025-10-26T17:00:50.416275+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 226, ""latency_ms"": 24}"
+2025-10-26T17:01:01.296492+00:00,glossary_click,user_cea7d5c3,sess_5f27eebf922d,2,주가,news_highlight,detail,,"{""click_count"": 3}"
+2025-10-26T17:01:01.310719+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,주가,news_highlight,detail,,"{""answer_len"": 210}"
+2025-10-26T17:01:05.327244+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,주 가,{}
+2025-10-26T17:01:05.415971+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,주가,chat_rag,sidebar,,"{""answer_len"": 210, ""query"": ""주 가""}"
+2025-10-26T17:01:05.417979+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 210, ""latency_ms"": 91}"
+2025-10-26T17:01:09.413495+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,ㅈㄱ,{}
+2025-10-26T17:01:09.496497+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,스마트 계약,chat_rag,sidebar,,"{""answer_len"": 358, ""query"": ""ㅈㄱ""}"
+2025-10-26T17:01:09.499489+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 358, ""latency_ms"": 87}"
+2025-10-26T17:01:25.478118+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,음 요리에 대해 설명해주라,{}
+2025-10-26T17:01:25.572421+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,배당소득세,chat_rag,sidebar,,"{""answer_len"": 327, ""query"": ""음 요리에 대해 설명해주라""}"
+2025-10-26T17:01:25.574594+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 327, ""latency_ms"": 98}"
+2025-10-26T17:01:41.415863+00:00,news_detail_back,user_cea7d5c3,sess_5f27eebf922d,2,,,detail,,{}
+2025-10-26T17:01:42.843175+00:00,chat_reset,user_cea7d5c3,sess_5f27eebf922d,,,,sidebar,,{}
+2025-10-26T17:01:54.060590+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,요즘 핫한 금융용어에 대해 분석해봐,{}
+2025-10-26T17:01:54.158128+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,공포탐욕지수,chat_rag,sidebar,,"{""answer_len"": 443, ""query"": ""요즘 핫한 금융용어에 대해 분석해봐""}"
+2025-10-26T17:01:54.161889+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 443, ""latency_ms"": 102}"
+2025-10-26T17:02:08.436106+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,요즘 핫한 사회 이슈에 대해 얘기해봐,{}
+2025-10-26T17:02:08.529336+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,주가,chat_rag,sidebar,,"{""answer_len"": 210, ""query"": ""요즘 핫한 사회 이슈에 대해 얘기해봐""}"
+2025-10-26T17:02:08.532340+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 210, ""latency_ms"": 97}"
+2025-10-26T17:14:39.995740+00:00,chat_reset,user_cea7d5c3,sess_5f27eebf922d,,,,sidebar,,{}
+2025-10-26T17:14:47.835369+00:00,news_click,user_cea7d5c3,sess_5f27eebf922d,3,,list,home,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-26T17:14:48.076725+00:00,news_detail_open,user_cea7d5c3,sess_5f27eebf922d,3,,,detail,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-26T17:14:51.591080+00:00,glossary_click,user_cea7d5c3,sess_5f27eebf922d,3,기준금리,news_highlight,detail,,"{""click_count"": 4}"
+2025-10-26T17:14:51.605360+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,기준금리,news_highlight,detail,,"{""answer_len"": 300}"
+2025-10-26T17:14:56.769097+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,금리,{}
+2025-10-26T17:14:56.815604+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,금리,chat_rag,sidebar,,"{""answer_len"": 226, ""query"": ""금리""}"
+2025-10-26T17:14:56.817606+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 226, ""latency_ms"": 49}"
+2025-10-26T17:15:23.136901+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,스테이블코인,{}
+2025-10-26T17:15:23.158621+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,스테이블코인,chat_rag,sidebar,,"{""answer_len"": 264, ""query"": ""스테이블코인""}"
+2025-10-26T17:15:23.162086+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 264, ""latency_ms"": 26}"
+2025-10-26T17:15:28.725820+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,스테이블 코인,{}
+2025-10-26T17:15:38.711402+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 609, ""latency_ms"": 9987}"
+2025-10-26T17:15:52.241000+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,요즘 핫한 사회이슈에 대해 설명해봐,{}
+2025-10-26T17:15:52.339905+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,주가,chat_rag,sidebar,,"{""answer_len"": 210, ""query"": ""요즘 핫한 사회이슈에 대해 설명해봐""}"
+2025-10-26T17:15:52.342910+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 210, ""latency_ms"": 101}"
+2025-10-26T17:16:10.922872+00:00,chat_question,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,요즘 핫한 이슈에 대해 얘기해봐,{}
+2025-10-26T17:16:15.933360+00:00,chat_response,user_cea7d5c3,sess_5f27eebf922d,,,chat,sidebar,,"{""answer_len"": 562, ""latency_ms"": 5011}"
+2025-10-26T17:16:21.475877+00:00,glossary_click,user_cea7d5c3,sess_5f27eebf922d,3,환율,news_highlight,detail,,"{""click_count"": 5}"
+2025-10-26T17:16:21.488496+00:00,glossary_answer,user_cea7d5c3,sess_5f27eebf922d,,환율,news_highlight,detail,,"{""answer_len"": 247}"
+2025-10-27T00:13:21.832991+00:00,session_start,user_cea7d5c3,sess_e09675c437d6,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-27T00:16:54.279238+00:00,news_click,user_cea7d5c3,sess_e09675c437d6,1,,list,home,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-27T00:16:54.884202+00:00,news_detail_open,user_cea7d5c3,sess_e09675c437d6,1,,,detail,,"{""title"": ""한국은행, 기준금리 동결 결정""}"
+2025-10-27T00:17:05.805740+00:00,glossary_click,user_cea7d5c3,sess_e09675c437d6,1,금리,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-27T00:17:05.880080+00:00,glossary_answer,user_cea7d5c3,sess_e09675c437d6,,금리,news_highlight,detail,,"{""answer_len"": 226}"
+2025-10-27T00:17:14.216370+00:00,chat_question,user_cea7d5c3,sess_e09675c437d6,,,chat,sidebar,기준금리,{}
+2025-10-27T00:17:14.308514+00:00,glossary_answer,user_cea7d5c3,sess_e09675c437d6,,기준금리,chat_rag,sidebar,,"{""answer_len"": 300, ""query"": ""기준금리""}"
+2025-10-27T00:17:14.310717+00:00,chat_response,user_cea7d5c3,sess_e09675c437d6,,,chat,sidebar,,"{""answer_len"": 300, ""latency_ms"": 95}"
+2025-10-27T00:17:50.856765+00:00,chat_question,user_cea7d5c3,sess_e09675c437d6,,,chat,sidebar,기준 금리,{}
+2025-10-27T00:17:50.904161+00:00,glossary_answer,user_cea7d5c3,sess_e09675c437d6,,금리,chat_rag,sidebar,,"{""answer_len"": 226, ""query"": ""기준 금리""}"
+2025-10-27T00:17:50.911218+00:00,chat_response,user_cea7d5c3,sess_e09675c437d6,,,chat,sidebar,,"{""answer_len"": 226, ""latency_ms"": 59}"
+2025-10-27T00:18:02.339008+00:00,chat_question,user_cea7d5c3,sess_e09675c437d6,,,chat,sidebar,스테이블 코인,{}
+2025-10-27T00:18:09.980064+00:00,chat_response,user_cea7d5c3,sess_e09675c437d6,,,chat,sidebar,,"{""answer_len"": 644, ""latency_ms"": 7644}"
+2025-10-27T04:04:16.486523+00:00,session_start,user_cea7d5c3,sess_108eb7417451,,,,home,,"{""ua"": {}, ""note"": ""MVP session start""}"
+2025-10-27T04:06:47.126770+00:00,news_click,user_cea7d5c3,sess_108eb7417451,3,,list,home,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-27T04:06:47.756358+00:00,news_detail_open,user_cea7d5c3,sess_108eb7417451,3,,,detail,,"{""title"": ""원달러 환율, 1,300원 돌파""}"
+2025-10-27T04:06:53.720365+00:00,glossary_click,user_cea7d5c3,sess_108eb7417451,3,금리,news_highlight,detail,,"{""click_count"": 1}"
+2025-10-27T04:06:53.800788+00:00,glossary_answer,user_cea7d5c3,sess_108eb7417451,,금리,news_highlight,detail,,"{""answer_len"": 226}"
+2025-10-27T04:07:01.077429+00:00,chat_question,user_cea7d5c3,sess_108eb7417451,,,chat,sidebar,기준금리,{}
+2025-10-27T04:07:01.173826+00:00,glossary_answer,user_cea7d5c3,sess_108eb7417451,,기준금리,chat_rag,sidebar,,"{""answer_len"": 300, ""query"": ""기준금리""}"
+2025-10-27T04:07:01.181782+00:00,chat_response,user_cea7d5c3,sess_108eb7417451,,,chat,sidebar,,"{""answer_len"": 300, ""latency_ms"": 103}"
+2025-10-27T04:07:18.681924+00:00,chat_question,user_cea7d5c3,sess_108eb7417451,,,chat,sidebar,스테이블코인이 뭐야?,{}
+2025-10-27T04:07:18.989529+00:00,glossary_answer,user_cea7d5c3,sess_108eb7417451,,스테이블코인,chat_rag,sidebar,,"{""answer_len"": 264, ""query"": ""스테이블코인이 뭐야?""}"
+2025-10-27T04:07:18.995515+00:00,chat_response,user_cea7d5c3,sess_108eb7417451,,,chat,sidebar,,"{""answer_len"": 264, ""latency_ms"": 316}"
+2025-10-27T04:09:11.119094+00:00,chat_question,user_cea7d5c3,sess_108eb7417451,,,chat,sidebar,기준 금리,{}
+2025-10-27T04:09:11.160400+00:00,glossary_answer,user_cea7d5c3,sess_108eb7417451,,금리,chat_rag,sidebar,,"{""answer_len"": 226, ""query"": ""기준 금리""}"
+2025-10-27T04:09:11.163804+00:00,chat_response,user_cea7d5c3,sess_108eb7417451,,,chat,sidebar,,"{""answer_len"": 226, ""latency_ms"": 46}"
+2025-10-27T04:11:45.368270+00:00,news_detail_back,user_cea7d5c3,sess_108eb7417451,3,,,detail,,{}
+2025-10-27T04:12:18.982707+00:00,chat_reset,user_cea7d5c3,sess_108eb7417451,,,,sidebar,,{}

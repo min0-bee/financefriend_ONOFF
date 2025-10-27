@@ -6,3 +6,8 @@
 config_local.py
 secrets.json
 .streamlit/secrets.toml
+ui/__pycache__/**
+ui/components/__pycache__/**
+rag/__pycache__/**
+data/__pycache__/**
+core/__pycache__/**
