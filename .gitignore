@@ -11,3 +11,5 @@ ui/components/__pycache__/**
 rag/__pycache__/**
 data/__pycache__/**
 core/__pycache__/**
+logs/events.csv
+logs/events_ver3.csv
