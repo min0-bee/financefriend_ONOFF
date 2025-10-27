@@ -66,12 +66,35 @@ def render():
     st.info("💡 아래 버튼에서 용어를 선택하면 챗봇이 쉽게 설명해드립니다!")
     st.subheader("🔍 용어 설명 요청")
 
-    terms = [t for t in st.session_state.financial_terms.keys() if t in article['content']]
-    for i in range(0, len(terms), 3):
+    # RAG 시스템이 초기화되어 있으면 RAG의 모든 용어 사용, 아니면 기본 사전 사용
+    terms_to_show = []
+    if st.session_state.get("rag_initialized", False):
+        try:
+            collection = st.session_state.rag_collection
+            all_data = collection.get()
+            if all_data and all_data['metadatas']:
+                for metadata in all_data['metadatas']:
+                    term = metadata.get('term', '').strip()
+                    if term and term in article['content']:
+                        terms_to_show.append(term)
+                    # 유의어도 체크
+                    synonym = metadata.get('synonym', '').strip()
+                    if synonym and synonym in article['content']:
+                        terms_to_show.append(synonym)
+                # 중복 제거
+                terms_to_show = list(set(terms_to_show))
+        except Exception as e:
+            st.warning(f"⚠️ RAG 용어 로드 중 오류: {e}")
+            terms_to_show = [t for t in st.session_state.financial_terms.keys() if t in article['content']]
+    else:
+        terms_to_show = [t for t in st.session_state.financial_terms.keys() if t in article['content']]
+
+    # 버튼 렌더링 (3열 그리드)
+    for i in range(0, len(terms_to_show), 3):
         cols = st.columns(3)
         for j, col in enumerate(cols):
-            if i + j < len(terms):
-                term = terms[i + j]
+            if i + j < len(terms_to_show):
+                term = terms_to_show[i + j]
                 with col:
                     if st.button(f"📌 {term}", key=f"term_btn_{term}", use_container_width=True):
                         st.session_state.term_click_count += 1

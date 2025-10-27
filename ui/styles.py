@@ -61,15 +61,29 @@ CSS = """
     background: #f5f5f5;           /* 밝은 회색 배경 */
 }
 
-/* 🟨 클릭 가능한 금융 용어 (기사 본문에서 하이라이트되는 단어) */
-.clickable-term {
+/* 🟨 금융 용어 하이라이트 (기사 본문에서 하이라이트되는 단어) */
+.financial-term {
     transition: all 0.2s;          /* hover 시 부드럽게 변화 */
+    font-weight: 500;              /* 약간 굵게 */
 }
 
 /* 용어에 마우스를 올리면 강조 */
-.clickable-term:hover {
+.financial-term:hover {
     background-color: #FDD835 !important;  /* 노란색 강조 */
-    transform: scale(1.05);                /* 약간 커지게 */
+    transform: scale(1.02);                /* 약간 커지게 */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1); /* 그림자 효과 */
+}
+
+/* 하위 호환성: 이전 클래스명도 지원 */
+.clickable-term {
+    transition: all 0.2s;
+    font-weight: 500;
+}
+
+.clickable-term:hover {
+    background-color: #FDD835 !important;
+    transform: scale(1.02);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 """
 
