@@ -143,8 +143,11 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         latency = int((time.time() - t0) * 1000)
         log_event(
             "chat_response",
-            source="chat", surface="sidebar",
-            payload={"answer_len": len(explanation), "latency_ms": latency}
+            source="chat",
+            surface="sidebar",
+            message=explanation,          # ✅ 챗봇 답변 본문
+            answer_len=len(explanation),  # ✅ 응답 길이
+            latency_ms=latency            # ✅ 응답 지연(ms)
         )
         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
         st.rerun()

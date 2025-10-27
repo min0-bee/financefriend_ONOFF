@@ -19,7 +19,9 @@ def init_app():
     # 챗봇 대화 기록 저장용 리스트
     st.session_state.setdefault("chat_history", [])
     # 금융 용어 클릭 횟수
-    st.session_state.setdefault("term_click_count", 0)
+    st.session_state.setdefault("term_click_count", 0)         # 용어 클릭 수
+    st.session_state.setdefault("news_click_count", 0)         # 📰 뉴스 클릭 수  - 추가중
+    st.session_state.setdefault("chat_count", 0)               # 💬 챗봇 대화 수  - 추가중
     # 상세 뉴스 진입 로그 기록 여부 (중복 방지)
     st.session_state.setdefault("detail_enter_logged", False)
     # 뉴스 기사 리스트 (빈 상태로 초기화)
