@@ -8,7 +8,7 @@ from core.config import LOG_DIR, LOG_FILE
 
 # 1) 실제 사용하는 모든 칼럼을 헤더에 “고정”
 CSV_HEADER = [
-    "event_time", "event_name",
+    "event_id", "event_time", "event_name",
     "user_id", "session_id",
     "surface", "source",
     "news_id", "term",
@@ -56,6 +56,7 @@ def log_event(event_name: str, **kwargs):
 
     row = {
         # ================== 기본 메타 정보 ==================
+        "event_id": str(uuid.uuid4()),
         "event_time": now_utc_iso(),                     # 🕓 이벤트 발생 시각 (UTC 기준, ISO 포맷)
         "event_name": event_name,                        # 🏷️ 이벤트 이름 (예: "news_click", "chat_question")
 
