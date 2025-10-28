@@ -1,6 +1,7 @@
 # core/logger.py
 import os
 import csv
+import uuid
 import json
 from datetime import datetime, timezone
 import streamlit as st
