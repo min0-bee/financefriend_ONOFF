@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import uuid
 import pandas as pd
 from datetime import datetime, timezone
 from core.config import LOG_DIR, LOG_FILE
@@ -87,6 +88,7 @@ def load_logs_as_df(log_file: str) -> pd.DataFrame:
 
     # 컬럼 순서 재정렬 (보기 쉽게)
     order_cols = [
+        "event_id",
         "event_time",
         "event_name",
         "user_id",
