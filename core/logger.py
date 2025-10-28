@@ -2,6 +2,7 @@
 import os
 import csv
 import json
+import uuid
 from datetime import datetime, timezone
 import streamlit as st
 from core.config import LOG_DIR, LOG_FILE
