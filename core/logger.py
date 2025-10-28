@@ -1,6 +1,7 @@
 # core/logger.py
 import os
 import csv
+import uuid
 import json
 import uuid
 from datetime import datetime, timezone
