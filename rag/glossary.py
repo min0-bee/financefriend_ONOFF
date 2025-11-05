@@ -208,10 +208,6 @@ def highlight_terms(text: str) -> str:
                     term = metadata.get('term', '').strip()
                     if term:
                         terms_to_highlight.add(term)
-                    # 유의어도 하이라이트 대상에 추가
-                    synonym = metadata.get('synonym', '').strip()
-                    if synonym:
-                        terms_to_highlight.add(synonym)
         except Exception as e:
             # RAG 오류 시 Fallback: 기본 사전 사용
             st.session_state.rag_initialized = False  # 실패 상태로 표시
@@ -306,15 +302,15 @@ def highlight_terms(text: str) -> str:
 
 # ─────────────────────────────────────────────────────────────
 # 📁 CSV 파일에서 금융용어 로드
-# - rag/glossary/금융용어사전.csv 파일을 pandas로 읽어옴
-# - 컬럼: 번호, 작업자, 금융용어, 유의어, 정의, 비유, 왜 중요?, 오해 교정, 예시, 단어 난이도, 비고
+# - rag/glossary/금융용어.csv 파일을 pandas로 읽어옴
+# - 컬럼: 번호, 금융용어, 정의, 비유, 왜 중요?, 오해 교정, 예시
 # ─────────────────────────────────────────────────────────────
 def load_glossary_from_csv() -> pd.DataFrame:
-    """금융용어사전.csv 파일을 로드하여 DataFrame으로 반환"""
-    csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어사전.csv")
+    """금융용어.csv 파일을 로드하여 DataFrame으로 반환"""
+    csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
 
     if not os.path.exists(csv_path):
-        st.warning(f"⚠️ 금융용어사전 파일을 찾을 수 없습니다: {csv_path}")
+        st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
         return pd.DataFrame()
 
     try:
@@ -379,16 +375,12 @@ def initialize_rag_system():
             if not term:  # 빈 용어는 스킵
                 continue
 
-            # 검색 문서: 용어 + 유의어 + 정의 + 비유를 결합
-            synonym = str(row.get("유의어", "")).strip()
+            # 검색 문서: 용어 + 정의 + 비유를 결합
             definition = str(row.get("정의", "")).strip()
             analogy = str(row.get("비유", "")).strip()
 
             # 벡터화할 텍스트 생성
-            search_text = f"{term}"
-            if synonym:
-                search_text += f" ({synonym})"
-            search_text += f" - {definition}"
+            search_text = f"{term} - {definition}"
             if analogy:
                 search_text += f" | 비유: {analogy}"
 
@@ -397,13 +389,11 @@ def initialize_rag_system():
             # 메타데이터: 전체 정보 저장
             metadatas.append({
                 "term": term,
-                "synonym": synonym,
                 "definition": definition,
                 "analogy": analogy,
                 "importance": str(row.get("왜 중요?", "")).strip(),
                 "correction": str(row.get("오해 교정", "")).strip(),
                 "example": str(row.get("예시", "")).strip(),
-                "difficulty": str(row.get("단어 난이도", "")).strip(),
             })
 
             ids.append(f"term_{idx}")
@@ -511,11 +501,9 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
                 # 정확한 용어 매칭 (대소문자 무시, 완전 일치)
                 for metadata in all_data['metadatas']:
                     rag_term = metadata.get('term', '').strip()
-                    synonym = metadata.get('synonym', '').strip()
 
-                    # 용어 또는 유의어가 정확히 일치하는지 확인
-                    if (rag_term.lower() == term.lower() or
-                        (synonym and synonym.lower() == term.lower())):
+                    # 용어가 정확히 일치하는지 확인
+                    if rag_term.lower() == term.lower():
 
                         # RAG 정보 수집
                         rag_info = {
@@ -535,9 +523,6 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
 
                         # 마크다운 포맷으로 친절한 설명 구성
                         response = f"**{term_name}** 에 대해 설명해드릴게요! 🎯\n\n"
-
-                        if synonym:
-                            response += f"💡 **유의어**: {synonym}\n\n"
 
                         if definition:
                             response += f"📖 **정의**\n{definition}\n\n"

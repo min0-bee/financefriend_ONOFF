@@ -45,7 +45,6 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                     # 정확한 용어 매칭 시도 (단어 경계 고려)
                     for metadata in all_data['metadatas']:
                         rag_term = metadata.get('term', '').strip()
-                        synonym = metadata.get('synonym', '').strip()
 
                         # 단어 경계를 고려한 정확한 매칭 (띄어쓰기, 문장부호 고려)
                         # \b는 단어 경계를 의미하지만 한글에는 적용 안됨
@@ -55,14 +54,6 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                             matched_term = rag_term
                             is_financial_question = True
                             break
-
-                        # 유의어도 동일하게 체크
-                        if synonym:
-                            pattern_syn = r'(^|\s)' + re.escape(synonym) + r'($|\s|[?!.,])'
-                            if re.search(pattern_syn, user_input, re.IGNORECASE):
-                                matched_term = rag_term
-                                is_financial_question = True
-                                break
 
                     # 정확 매칭 실패 시 벡터 검색으로 유사 용어 찾기 (단, 금융 관련 키워드가 있을 때만)
                     if not matched_term:

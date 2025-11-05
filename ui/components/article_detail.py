@@ -90,10 +90,6 @@ def render():
                     term = metadata.get('term', '').strip()
                     if term and term in article['content']:
                         terms_to_show.append(term)
-                    # 유의어도 체크
-                    synonym = metadata.get('synonym', '').strip()
-                    if synonym and synonym in article['content']:
-                        terms_to_show.append(synonym)
                 # 중복 제거
                 terms_to_show = list(set(terms_to_show))
         except Exception as e:
