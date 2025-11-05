@@ -13,7 +13,7 @@ from ui.components.news_list import render as NewsList
 from ui.components.article_detail import render as ArticleDetail
 from ui.components.chat_panel import render as ChatPanel
 from ui.components.sidebar import render as Sidebar
-from ui.components.log_viewer import render as LogViewer
+from ui.components.log_viewer_server import render as LogViewer
 
 
 

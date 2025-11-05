@@ -1,14 +1,25 @@
 # === 부트스트랩 인라인 ===
 from core.user import init_session_and_user
-from core.logger import log_event
+from core.logger import log_event, _ensure_backend_user, _ensure_backend_session
 from data.news import collect_news
 from rag.glossary import ensure_financial_terms
+from core.config import API_ENABLE
 import streamlit as st
 
 
 def init_app():   
     # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등)
     init_session_and_user()
+    
+    # ✅ 1.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성
+    # event_log 중심 모드에서는 선택적으로 실행 (실패해도 계속 진행)
+    if API_ENABLE:
+        user_id = st.session_state.get("user_id")
+        if user_id:
+            # 서버에 연결하여 UUID로 교체 (silent=True로 에러 숨김 - event_log만 사용 시)
+            _ensure_backend_user(user_id, silent=True)
+            # 서버 세션 생성 (로그 뷰어에서 사용하기 위해 미리 생성)
+            _ensure_backend_session()
 
     # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드)
     ensure_financial_terms()
