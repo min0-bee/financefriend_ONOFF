@@ -142,12 +142,12 @@ def render():
                             term=term,
                             source="news_highlight",
                             surface="detail",
-                            message=explanation,                # 설명 본문
+                            message=user_question,              # 사용자 질문 (자동 생성된 질문)
                             answer_len=len(explanation),
                             latency_ms=latency_ms,
                             via="rag",
                             rag_info=rag_info,                 # RAG 정보 전달
-                            response=explanation                # 응답 전체 전달
+                            response=explanation                # 시스템 응답 (설명)
                         )
 
                         st.rerun()

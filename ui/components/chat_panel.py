@@ -91,11 +91,11 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                             term=matched_term, 
                             source="chat_rag", 
                             surface="sidebar",
-                            message=explanation,  # 설명 본문 추가
+                            message=user_input,  # 사용자 질문
                             answer_len=len(explanation),
                             via="rag",
                             rag_info=rag_info,  # RAG 정보 전달
-                            response=explanation,  # 응답 전체 전달
+                            response=explanation,  # 시스템 응답 (설명)
                             payload={"query": user_input}
                         )
             except Exception as e:
@@ -114,11 +114,11 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                         term=term_key, 
                         source="chat", 
                         surface="sidebar",
-                        message=explanation,  # 설명 본문 추가
+                        message=user_input,  # 사용자 질문
                         answer_len=len(explanation),
                         via="rag",
                         rag_info=rag_info,  # RAG 정보 전달
-                        response=explanation  # 응답 전체 전달
+                        response=explanation  # 시스템 응답 (설명)
                     )
                     break
 
@@ -167,22 +167,27 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         # 로깅 + 응답 축적
         latency = int((time.time() - t0) * 1000)
         
-        # OpenAI API 정보가 있으면 포함 (일반 질문의 경우)
-        log_kwargs = {
-            "source": "chat",
-            "surface": "sidebar",
-            "message": explanation,          # ✅ 챗봇 답변 본문
-            "answer_len": len(explanation),  # ✅ 응답 길이
-            "latency_ms": latency,            # ✅ 응답 지연(ms)
-            "response": explanation           # ✅ 응답 전체
-        }
+        # glossary_answer 이벤트가 발생한 경우 chat_response는 호출하지 않음 (중복 방지)
+        # glossary_answer에서 이미 dialogue가 생성되었으므로 chat_response는 건너뜀
+        # matched_term이 있으면 이미 glossary_answer가 호출되었음을 의미
+        if not is_financial_question and not matched_term:
+            # 일반 질문의 경우에만 chat_response 이벤트 발생
+            log_kwargs = {
+                "source": "chat",
+                "surface": "sidebar",
+                "message": user_input,            # ✅ 사용자 질문
+                "answer_len": len(explanation),  # ✅ 응답 길이
+                "latency_ms": latency,            # ✅ 응답 지연(ms)
+                "response": explanation           # ✅ 시스템 응답
+            }
+            
+            # OpenAI API 정보 추가 (있는 경우)
+            if api_info:
+                log_kwargs["api_info"] = api_info
+                log_kwargs["via"] = "openai"
+            
+            log_event("chat_response", **log_kwargs)
         
-        # OpenAI API 정보 추가 (있는 경우)
-        if api_info:
-            log_kwargs["api_info"] = api_info
-            log_kwargs["via"] = "openai"
-        
-        log_event("chat_response", **log_kwargs)
         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
         st.rerun()
 
