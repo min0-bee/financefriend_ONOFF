@@ -2,6 +2,7 @@ streamlit
 pandas
 openai>=1.40.0
 requests>=2.31.0  # API 호출용
+streamlit-js-eval>=0.1.5  # JavaScript 평가용
 # RAG 시스템을 위한 라이브러리
 chromadb>=0.4.0  # 벡터 데이터베이스
 sentence-transformers>=2.2.0  # 한국어 임베딩 모델
