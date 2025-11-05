@@ -21,10 +21,10 @@ except Exception:
 
 # API 설정
 API_BASE_URL = "http://192.168.80.124:8000"  # 팀원 서버 주소
-API_ENABLE = True  # API 사용 여부 (False면 CSV만 사용) - 서버 연결 테스트 시 True
+API_ENABLE = False  # API 사용 여부 (기본값 False - 배포 환경에서는 로컬 서버 접근 불가)
 API_RETRY_COUNT = 3  # API 실패 시 재시도 횟수
 API_RETRY_DELAY = 1  # 재시도 간격 (초)
-API_SHOW_ERRORS = True  # 연결 실패 시 에러 메시지 표시 여부 (테스트 중에는 True 권장)
+API_SHOW_ERRORS = False  # 연결 실패 시 에러 메시지 표시 여부 (기본값 False - 배포 환경에서 에러 숨김)
 
 # CSV 설정 (서버 중심 모드에서는 비활성화 권장)
 CSV_ENABLE = False  # CSV 저장 여부 (False면 서버로만 전송, 로그 뷰어는 서버에서 조회)
@@ -74,14 +74,16 @@ EVENT_TO_INTERACTION_TYPE = {
     "news_detail_back": "view",  # 상세 페이지 뒤로가기 = view로 처리
 }
 
-# Streamlit Secrets에서 API 설정 가져오기
+# Streamlit Secrets에서 API 설정 가져오기 (로컬 개발 시 True로 설정)
 try:
     import streamlit as st
     if "API_BASE_URL" in st.secrets:
         API_BASE_URL = st.secrets["API_BASE_URL"]
     if "API_ENABLE" in st.secrets:
-        API_ENABLE = st.secrets.get("API_ENABLE", False)  # 기본값 False
+        # secrets에 있으면 그 값 사용 (로컬에서는 True로 설정 가능)
+        API_ENABLE = st.secrets.get("API_ENABLE", False)
     if "API_SHOW_ERRORS" in st.secrets:
+        # secrets에 있으면 그 값 사용 (로컬 개발 시 True로 설정 가능)
         API_SHOW_ERRORS = st.secrets.get("API_SHOW_ERRORS", False)
     if "CSV_ENABLE" in st.secrets:
         CSV_ENABLE = st.secrets.get("CSV_ENABLE", False)  # 기본값 False (서버 중심)
