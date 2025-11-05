@@ -17,3 +17,8 @@ logs/events_ver3.csv
 
 # 문서 폴더 (개인 문서)
 docs/
+
+# Test files
+test_*.py
+*_test.py
+tests/
