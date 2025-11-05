@@ -1203,48 +1203,142 @@ def _log_dialogue(sender_type: str, content: str, intent: Optional[str] = None) 
         supabase = get_supabase_client()
         if supabase:
             try:
+                # 로그 중심 모드: session_id는 선택적 (NULL 허용으로 변경됨)
+                # 세션별 통계를 위해 있으면 사용하고, 없으면 NULL로 저장
                 session_id = _get_backend_session_id()
                 
-                # Supabase dialogues 테이블에 삽입 (기존 스키마에 맞춤)
+                # session_id가 없으면 생성 시도 (선택적, 실패해도 OK)
+                if session_id is None:
+                    # API가 활성화되어 있으면 API로 세션 생성 시도
+                    if API_ENABLE:
+                        session_id = _ensure_backend_session()
+                    
+                    # API가 비활성화되어 있으면 Supabase에 간단하게 세션 생성 시도 (선택적)
+                    # 실패해도 조용히 처리 (event_logs에는 기록되고, dialogues는 session_id NULL로 저장)
+                    if session_id is None and not API_ENABLE:
+                        try:
+                            user_id = _get_user_id()
+                            if user_id:
+                                # 간단한 세션 생성 (필수 필드만)
+                                # users 테이블에 사용자가 없으면 생성 시도 (FK 제약)
+                                user_exists = False
+                                try:
+                                    user_response = supabase.table("users").select("user_id").eq("user_id", user_id).limit(1).execute()
+                                    user_exists = user_response.data and len(user_response.data) > 0
+                                except:
+                                    user_exists = False
+                                
+                                # 사용자가 없으면 간단하게 생성 시도
+                                if not user_exists:
+                                    try:
+                                        user_insert = {
+                                            "user_id": user_id,
+                                            "created_at": datetime.now(timezone.utc).isoformat()
+                                        }
+                                        supabase.table("users").insert(user_insert).execute()
+                                        user_exists = True
+                                        import time
+                                        time.sleep(0.1)  # FK 제약 반영 대기
+                                    except Exception:
+                                        # 사용자 생성 실패해도 조용히 처리
+                                        pass
+                                
+                                # 세션 생성 시도 (users 테이블에 사용자가 있어야 함)
+                                if user_exists:
+                                    try:
+                                        session_token = str(uuid.uuid4())
+                                        from datetime import timedelta
+                                        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+                                        session_insert = {
+                                            "user_id": user_id,
+                                            "session_token": session_token,
+                                            "created_at": datetime.now(timezone.utc).isoformat(),
+                                            "expires_at": expires_at.isoformat()
+                                        }
+                                        session_response = supabase.table("sessions").insert(session_insert).execute()
+                                        if session_response.data:
+                                            session_row = session_response.data[0] if session_response.data else {}
+                                            session_id = session_row.get("session_id") or session_row.get("id")
+                                            if session_id:
+                                                st.session_state["backend_session_id"] = session_id
+                                    except Exception:
+                                        # 세션 생성 실패해도 조용히 처리 (dialogues는 session_id NULL로 저장)
+                                        pass
+                        except Exception:
+                            # 세션 생성 실패해도 조용히 처리
+                            pass
+                
+                # dialogues 테이블에 저장 시도 (session_id가 NULL이어도 저장 가능)
                 insert_data = {
                     "sender_type": sender_type,
                     "content": content,
                     "created_at": datetime.now(timezone.utc).isoformat()
                 }
                 
-                # session_id는 선택적 (기존 테이블 스키마에 있음)
+                # session_id가 있으면 포함, 없으면 NULL로 저장 (NOT NULL 제약 해제됨)
                 if session_id is not None:
                     insert_data["session_id"] = session_id
+                
                 if intent:
                     insert_data["intent"] = intent
                 
-                response = supabase.table("dialogues").insert(insert_data).execute()
-                
-                if response.data:
-                    # Supabase에서 생성된 dialogue_id 반환
-                    # Supabase는 삽입된 행의 모든 컬럼을 반환하므로 dialogue_id 또는 id 확인
-                    row_data = response.data[0] if response.data else {}
-                    dialogue_id = row_data.get("dialogue_id") or row_data.get("id")
+                try:
+                    response = supabase.table("dialogues").insert(insert_data).execute()
                     
-                    if dialogue_id:
-                        return dialogue_id, None
+                    if response.data:
+                        # Supabase에서 생성된 dialogue_id 반환
+                        row_data = response.data[0] if response.data else {}
+                        # 가능한 모든 키 확인 (dialogue_id, id 등)
+                        dialogue_id = (
+                            row_data.get("dialogue_id") or 
+                            row_data.get("id") or
+                            (row_data.get("dialogue_id") if "dialogue_id" in row_data else None)
+                        )
+                        
+                        # 숫자로 변환 시도 (BIGINT인 경우)
+                        if dialogue_id is not None:
+                            try:
+                                dialogue_id = int(dialogue_id)
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        if dialogue_id:
+                            return dialogue_id, None
+                        else:
+                            # dialogue_id를 찾을 수 없어도 에러 아님 (event_logs에 기록됨)
+                            # 디버깅: response.data 전체 확인
+                            if API_SHOW_ERRORS:
+                                try:
+                                    st.warning(f"⚠️ dialogue_id를 찾을 수 없음. response.data: {response.data}")
+                                except:
+                                    pass
+                            return None, None
                     else:
-                        # 디버깅: 반환된 데이터 확인
+                        # dialogues 저장 실패해도 에러 아님 (event_logs에 기록됨)
                         if API_SHOW_ERRORS:
                             try:
-                                st.warning(f"⚠️ dialogue_id를 찾을 수 없습니다. 반환된 데이터: {list(row_data.keys())}")
+                                st.warning(f"⚠️ dialogues 저장 실패: response.data가 비어있음")
                             except:
                                 pass
-                        return None, f"dialogue_id를 가져올 수 없습니다 (반환된 키: {list(row_data.keys())})"
-                else:
-                    return None, "Supabase에 dialogue 삽입 실패"
+                        return None, None
+                except Exception as dialogue_error:
+                    # dialogues 저장 실패해도 에러 아님 (event_logs에 기록됨)
+                    # 로그 중심 모드에서는 dialogues는 선택적
+                    if API_SHOW_ERRORS:
+                        try:
+                            st.warning(f"⚠️ dialogues 저장 예외: {str(dialogue_error)}")
+                        except:
+                            pass
+                    return None, None
             except Exception as e:
                 error_msg = str(e)
-                if API_SHOW_ERRORS:
-                    try:
-                        st.warning(f"⚠️ Supabase dialogue 삽입 실패: {error_msg}")
-                    except:
-                        pass
+                # Supabase 에러는 항상 표시 (API_SHOW_ERRORS와 독립적)
+                try:
+                    st.error(f"⚠️ Supabase dialogue 삽입 실패: {error_msg}")
+                    import traceback
+                    st.error(f"상세 에러:\n{traceback.format_exc()}")
+                except:
+                    pass
                 # Supabase 실패해도 API로 시도 (API 활성화 시)
                 if API_ENABLE:
                     pass  # 아래 API 로직으로 진행
@@ -1424,13 +1518,23 @@ def _log_to_event_log(event_name: str, **kwargs) -> Tuple[bool, Optional[str]]:
     elif kwargs.get("term"):
         ref_id = str(kwargs.get("term"))
     
-    # payload: 모든 추가 정보를 JSON으로 저장
+    # payload: 모든 추가 정보를 JSON으로 저장 (분석용)
     payload = {}
     
     # 기본 정보
     user_id = _get_user_id()
     if user_id:
         payload["user_id"] = user_id
+    
+    # 세션 정보 (payload에도 포함 - 분석용)
+    if session_id is not None:
+        payload["session_id"] = session_id
+    
+    # UI 컨텍스트 정보 (payload에도 포함 - 분석용)
+    if surface:
+        payload["surface"] = surface
+    if source:
+        payload["source"] = source
     
     # 이벤트별 특화 정보 수집
     if kwargs.get("message"):
@@ -1448,7 +1552,29 @@ def _log_to_event_log(event_name: str, **kwargs) -> Tuple[bool, Optional[str]]:
     if kwargs.get("latency_ms") is not None:
         payload["latency_ms"] = kwargs.get("latency_ms")
     
-    # 기존 payload가 있으면 병합
+    # 응답 관련 정보 (분석용)
+    if kwargs.get("response"):
+        response = kwargs.get("response")
+        # 너무 길면 요약해서 저장 (분석은 가능하도록)
+        if len(str(response)) > 2000:
+            payload["response_preview"] = str(response)[:2000] + "..."
+            payload["response_length"] = len(str(response))
+        else:
+            payload["response"] = response
+    
+    # RAG 정보 (분석용)
+    if kwargs.get("rag_info"):
+        rag_info = kwargs.get("rag_info")
+        if isinstance(rag_info, dict):
+            payload["rag_info"] = rag_info
+    
+    # API 정보 (분석용)
+    if kwargs.get("api_info"):
+        api_info = kwargs.get("api_info")
+        if isinstance(api_info, dict):
+            payload["api_info"] = api_info
+    
+    # 기존 payload가 있으면 병합 (kwargs의 payload가 우선)
     existing_payload = kwargs.get("payload", {})
     if isinstance(existing_payload, dict):
         payload.update(existing_payload)
@@ -1669,15 +1795,21 @@ def _handle_dialogue_event(
         default_agent_id: 기본 agent_id
         **kwargs: 추가 파라미터
     """
-    message = _parse_message(kwargs.get("message", ""))
-    
-    # glossary_answer의 경우 message가 없으면 term 기반으로 기본 메시지 생성
-    if not message and event_name == "glossary_answer":
-        term = kwargs.get("term", "")
-        if term:
-            message = f"{term} 용어에 대한 설명"
-        else:
-            message = "금융 용어 설명"
+    # sender_type에 따라 적절한 content 선택
+    if sender_type == "assistant":
+        # assistant의 경우: response 우선, 없으면 message 사용
+        message = kwargs.get("response") or _parse_message(kwargs.get("message", ""))
+        
+        # glossary_answer의 경우 response가 없으면 term 기반으로 기본 메시지 생성
+        if not message and event_name == "glossary_answer":
+            term = kwargs.get("term", "")
+            if term:
+                message = f"{term} 용어에 대한 설명"
+            else:
+                message = "금융 용어 설명"
+    else:
+        # user의 경우: message 사용
+        message = _parse_message(kwargs.get("message", ""))
     
     if not message:
         return False, "메시지가 없습니다"
