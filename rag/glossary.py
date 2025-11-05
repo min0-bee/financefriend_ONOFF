@@ -197,7 +197,10 @@ def highlight_terms(text: str) -> str:
     # 1️⃣ RAG가 초기화되어 있으면 RAG의 모든 용어 사용
     if st.session_state.get("rag_initialized", False):
         try:
-            collection = st.session_state.rag_collection
+            collection = st.session_state.get("rag_collection")
+            if collection is None:
+                raise ValueError("RAG 컬렉션이 없습니다")
+            
             # 모든 문서의 메타데이터에서 용어 추출
             all_data = collection.get()
             if all_data and all_data['metadatas']:
@@ -206,8 +209,8 @@ def highlight_terms(text: str) -> str:
                     if term:
                         terms_to_highlight.add(term)
         except Exception as e:
-            st.warning(f"⚠️ RAG 용어 로드 중 오류, 기본 사전 사용: {e}")
-            # Fallback: 기존 하드코딩된 사전 사용
+            # RAG 오류 시 Fallback: 기본 사전 사용
+            st.session_state.rag_initialized = False  # 실패 상태로 표시
             terms_to_highlight = set(st.session_state.get("financial_terms", DEFAULT_TERMS).keys())
     else:
         # 2️⃣ RAG 미초기화 시 기존 사전 사용
@@ -431,8 +434,11 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
         return []
 
     try:
-        collection = st.session_state.rag_collection
-        embedding_model = st.session_state.rag_embedding_model
+        collection = st.session_state.get("rag_collection")
+        embedding_model = st.session_state.get("rag_embedding_model")
+        
+        if collection is None or embedding_model is None:
+            raise ValueError("RAG 시스템이 제대로 초기화되지 않았습니다")
 
         # 쿼리 임베딩
         query_embedding = embedding_model.encode([query])[0]
@@ -463,22 +469,32 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
 #   2. 신규: RAG 벡터 검색으로 유사 용어 찾기
 #   3. Fallback: RAG 실패 시 기존 방식으로 동작
 # ─────────────────────────────────────────────────────────────
-def explain_term(term: str, chat_history=None) -> str:
+def explain_term(term: str, chat_history=None, return_rag_info: bool = False) -> str:
     """
     용어 설명 생성 (RAG 정확 매칭 우선, 실패 시 기존 사전 사용)
 
     Args:
         term: 설명할 금융 용어
         chat_history: 채팅 이력 (향후 컨텍스트 강화용)
+        return_rag_info: True면 응답과 함께 RAG 정보도 반환
 
     Returns:
-        마크다운 형식의 용어 설명
+        return_rag_info=False: 마크다운 형식의 용어 설명 (str)
+        return_rag_info=True: (용어 설명, RAG 정보 딕셔너리)
+          RAG 정보 예시: {
+              "search_method": "exact_match",
+              "matched_term": "기준금리",
+              "source": "rag" 또는 "default_terms"
+          }
     """
 
     # 1️⃣ RAG 시스템이 초기화되어 있으면 정확한 용어 매칭 시도
     if st.session_state.get("rag_initialized", False):
         try:
-            collection = st.session_state.rag_collection
+            collection = st.session_state.get("rag_collection")
+            if collection is None:
+                raise ValueError("RAG 컬렉션이 없습니다")
+            
             all_data = collection.get()
 
             if all_data and all_data['metadatas']:
@@ -488,6 +504,14 @@ def explain_term(term: str, chat_history=None) -> str:
 
                     # 용어가 정확히 일치하는지 확인
                     if rag_term.lower() == term.lower():
+
+                        # RAG 정보 수집
+                        rag_info = {
+                            "search_method": "exact_match",
+                            "matched_term": rag_term,
+                            "source": "rag",
+                            "synonym_used": synonym.lower() == term.lower() if synonym else False
+                        }
 
                         # 매칭된 용어 정보로 설명 생성
                         term_name = rag_term
@@ -517,6 +541,8 @@ def explain_term(term: str, chat_history=None) -> str:
 
                         response += "더 궁금한 점이 있으시면 언제든지 물어보세요!"
 
+                        if return_rag_info:
+                            return response, rag_info
                         return response
 
         except Exception as e:
@@ -526,15 +552,26 @@ def explain_term(term: str, chat_history=None) -> str:
     terms = st.session_state.get("financial_terms", DEFAULT_TERMS)
 
     if term not in terms:
-        return f"'{term}'에 대한 정보가 금융 사전에 없습니다. 다른 용어를 선택해주세요."
+        error_msg = f"'{term}'에 대한 정보가 금융 사전에 없습니다. 다른 용어를 선택해주세요."
+        if return_rag_info:
+            rag_info["error"] = "term_not_found"
+            return error_msg, rag_info
+        return error_msg
 
     info = terms[term]
+    
+    # 기본 사전 사용 정보 업데이트
+    rag_info["source"] = "default_terms"
 
     # 마크다운 포맷으로 친절한 설명 구성
-    return (
+    response = (
         f"**{term}** 에 대해 설명해드릴게요! 🎯\n\n"
         f"📖 **정의**\n{info['정의']}\n\n"
         f"💡 **쉬운 설명**\n{info['설명']}\n\n"
         f"🌟 **비유로 이해하기**\n{info['비유']}\n\n"
         f"더 궁금한 점이 있으시면 언제든지 물어보세요!"
     )
+    
+    if return_rag_info:
+        return response, rag_info
+    return response
