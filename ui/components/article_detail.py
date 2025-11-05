@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 import streamlit as st
-from core.logger import log_event
+from core.logger import log_event, start_view_timer, end_view_timer, is_page_hidden_eval
 from rag.glossary import highlight_terms, explain_term
 
 def render():
@@ -22,6 +22,8 @@ def render():
         #     title=article.get("title"),
         #     note="기사 렌더링 시작"
         # )
+        # 상세 진입 타이머 시작
+        start_view_timer(article.get("id"))
 
         # 실제 렌더링
         st.markdown("---")
@@ -33,13 +35,15 @@ def render():
 
         # 렌더 완료 → latency 기록
         latency_ms = int((time.time() - t0) * 1000)
+        article_id = article.get("id")
         log_event(
             "news_detail_open",
-            news_id=article.get("id"),
+            news_id=article_id,  # article.get("id") 직접 사용
             surface="detail",
             title=article.get("title"),
             latency_ms=latency_ms,
             note="기사 렌더링 완료",
+            payload={"article_id": article_id}  # 디버깅용
         )
 
         # 플래그 설정(중복 기록 방지)
@@ -55,8 +59,17 @@ def render():
         st.markdown(highlight_terms(article['content']), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ← 목록으로
+    # 탭 전환 등으로 페이지가 숨겨지면 종료
+    if st.session_state.get("detail_enter_logged") and is_page_hidden_eval(key=f"vis_{article.get('id')}"):
+        end_view_timer()
+        st.session_state.detail_enter_logged = False
+
+
+    # ← 뒤로가기 버튼 : 목록으로
     if st.button("← 뉴스 목록으로 돌아가기"):
+        if st.session_state.get("detail_enter_logged"):
+            end_view_timer()
+            st.session_state.detail_enter_logged = False
         log_event("news_detail_back", news_id=article.get("id"), surface="detail")
         st.session_state.selected_article = None
         st.session_state.detail_enter_logged = False
@@ -102,8 +115,8 @@ def render():
                         # 대화 히스토리 (사용자 발화 1회만 기록)
                         st.session_state.chat_history.append({"role": "user", "content": user_question})
 
-                        # 설명 생성
-                        explanation = explain_term(term, st.session_state.chat_history)
+                        # 설명 생성 (RAG 정보 포함)
+                        explanation, rag_info = explain_term(term, st.session_state.chat_history, return_rag_info=True)
                         latency_ms = int((time.time() - t0) * 1000)
 
                         # 클릭(자동 질문 포함) 이벤트 로그
@@ -128,7 +141,9 @@ def render():
                             message=explanation,                # 설명 본문
                             answer_len=len(explanation),
                             latency_ms=latency_ms,
-                            via="glossary"
+                            via="rag",
+                            rag_info=rag_info,                 # RAG 정보 전달
+                            response=explanation                # 응답 전체 전달
                         )
 
                         st.rerun()

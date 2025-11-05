@@ -1,6 +1,9 @@
 streamlit
 pandas
 openai>=1.40.0
+requests>=2.31.0  # API 호출용
 # RAG 시스템을 위한 라이브러리
 chromadb>=0.4.0  # 벡터 데이터베이스
 sentence-transformers>=2.2.0  # 한국어 임베딩 모델
+# Supabase 클라이언트
+supabase>=2.0.0  # Supabase 데이터베이스 연결용

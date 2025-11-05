@@ -109,11 +109,15 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         explanation = None
         matched_term = None
         is_financial_question = False  # 금융 용어 질문인지 판단
+        api_info = None  # OpenAI API 정보 (초기화)
 
         # 1) RAG 정확 매칭 우선 (완전 일치 검색)
         if st.session_state.get("rag_initialized", False):
             try:
-                collection = st.session_state.rag_collection
+                collection = st.session_state.get("rag_collection")
+                if collection is None:
+                    raise ValueError("RAG 컬렉션이 없습니다")
+                
                 all_data = collection.get()
 
                 if all_data and all_data['metadatas']:
@@ -164,71 +168,99 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                                         is_financial_question = False
 
                     if matched_term:
-                        # RAG에서 찾은 용어로 설명 생성
-                        explanation = explain_term(
+                        explanation, rag_info = explain_term(
                             matched_term,
                             st.session_state.chat_history,
-                            question=user_input,
+                            return_rag_info=True,
                         )
                         log_event(
                             "glossary_answer",
-                            term=matched_term, source="chat_rag", surface="sidebar",
-                            payload={"answer_len": len(explanation), "query": user_input}
+                            term=matched_term,
+                            source="chat_rag",
+                            surface="sidebar",
+                            message=user_input,
+                            answer_len=len(explanation),
+                            via="rag",
+                            rag_info=rag_info,
+                            response=explanation,
+                            payload={"query": user_input}
                         )
             except Exception as e:
                 st.warning(f"⚠️ RAG 검색 중 오류 발생: {e}")
 
         # 2) RAG 실패 시: 하드코딩된 사전에서 정확한 매칭 시도
         if explanation is None and not is_financial_question:
-            # 단어 경계를 고려한 정확한 매칭
             for term_key in terms.keys():
                 lookahead = r"(?=($|\s|[?!.,]|[은는이가을를과와로도의]))"
                 pattern = rf"(^|\s){re.escape(term_key)}{lookahead}"
                 if re.search(pattern, user_input, re.IGNORECASE):
-                    explanation = explain_term(
+                    explanation, rag_info = explain_term(
                         term_key,
                         st.session_state.chat_history,
-                        question=user_input,
+                        return_rag_info=True,
                     )
                     is_financial_question = True
                     log_event(
                         "glossary_answer",
-                        term=term_key, source="chat", surface="sidebar",
-                        payload={"answer_len": len(explanation)}
+                        term=term_key,
+                        source="chat",
+                        surface="sidebar",
+                        message=user_input,
+                        answer_len=len(explanation),
+                        via="rag",
+                        rag_info=rag_info,
+                        response=explanation
                     )
                     break
 
         # 3) 금융 용어가 아닌 일반 질문: LLM 백업 (use_openai=True일 때만)
         if explanation is None and not is_financial_question:
             if use_openai:
-
-                try:
-                    explanation = albwoong_persona_reply(user_input)
-                except Exception as e:
-                    # LLM 장애 시 기존 MVP 메시지로 폴백
-                    explanation = (
-                        f"(LLM 연결 오류: {e})\n"
-                        "죄송합니다. 현재 일반 질문에 대한 답변 기능에 문제가 있습니다. "
-                        "금융 용어에 대해서는 계속 도와드릴 수 있어요!"
+                sys = {
+                    "role": "system",
+                    "content": (
+                        "너는 친근하고 박식한 AI 어시스턴트야. "
+                        "사용자의 질문에 정확하고 도움이 되는 답변을 제공해줘. "
+                        "금융 관련 질문이 아니어도 최선을 다해 답변하되, "
+                        "확실하지 않은 내용은 정직하게 모른다고 말해줘."
                     )
+                }
+                usr = {
+                    "role": "user",
+                    "content": user_input
+                }
+                try:
+                    explanation, api_info = llm_chat([sys, usr], temperature=0.7, max_tokens=500, return_metadata=True)
+                except Exception as e:
+                    explanation = albwoong_persona_reply(user_input, style_opt="짧게")
+                    api_info = {
+                        "error": {
+                            "type": type(e).__name__,
+                            "message": str(e)
+                        }
+                    }
             else:
-                # 기존 MVP 안내문
-                explanation = (
-                    f"'{user_input}'에 대해 궁금하시군요! MVP 단계에서는 등록된 용어("
-                    + ", ".join(list(terms.keys())[:5]) + " 등"
-                    + ")만 설명합니다. 기사 하이라이트를 눌러도 설명이 떠요 😊"
-                )
+                explanation = albwoong_persona_reply(user_input, style_opt="짧게")
 
         # 로깅 + 응답 축적
         latency = int((time.time() - t0) * 1000)
-        log_event(
-            "chat_response",
-            source="chat",
-            surface="sidebar",
-            message=explanation,          # ✅ 챗봇 답변 본문
-            answer_len=len(explanation),  # ✅ 응답 길이
-            latency_ms=latency            # ✅ 응답 지연(ms)
-        )
+        
+        # OpenAI API 정보가 있으면 포함 (일반 질문의 경우)
+        log_kwargs = {
+            "source": "chat",
+            "surface": "sidebar",
+            "message": explanation,          # ✅ 챗봇 답변 본문
+            "answer_len": len(explanation),  # ✅ 응답 길이
+            "latency_ms": latency,            # ✅ 응답 지연(ms)
+            "response": explanation           # ✅ 응답 전체
+        }
+        
+        # OpenAI API 정보 추가 (있는 경우)
+        if api_info:
+            log_kwargs["api_info"] = api_info
+            log_kwargs["via"] = "openai"
+        
+        log_event("chat_response", **log_kwargs)
         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
         st.rerun()
 

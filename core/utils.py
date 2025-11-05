@@ -144,7 +144,7 @@ def get_openai_client(api_key: str = None):
     return _openai_client
 
 
-def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: int = 512):
+def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: int = 512, return_metadata: bool = False):
     """
     💬 ChatGPT (Chat Completions API) 호출 헬퍼 함수
     --------------------------------------------------
@@ -167,9 +167,18 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
             생성 텍스트의 창의성 조절 (0~1, 낮을수록 일관성↑, 높을수록 다양성↑)
         max_tokens : int, optional
             모델이 생성할 최대 토큰 수 (응답 길이 제한)
+        return_metadata : bool, optional
+            True면 응답과 함께 메타데이터(토큰 사용량, 모델명 등)도 반환
 
     ✅ 반환값:
-        str : 모델이 생성한 텍스트 응답 (문자열)
+        str 또는 tuple : 
+            - return_metadata=False: 모델이 생성한 텍스트 응답 (문자열)
+            - return_metadata=True: (응답 텍스트, 메타데이터 딕셔너리)
+              메타데이터 예시: {
+                  "model": "gpt-4o-mini",
+                  "tokens": {"input": 150, "output": 200, "total": 350},
+                  "api_params": {"temperature": 0.3, "max_tokens": 512}
+              }
     """
 
     # ✅ 1. 설정값 가져오기
@@ -195,7 +204,26 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
     )
 
     # ✅ 5. 응답에서 모델의 텍스트 추출
-    return resp.choices[0].message.content.strip()
+    response_text = resp.choices[0].message.content.strip()
+    
+    # ✅ 6. 메타데이터 수집 (에이전트 수집용)
+    if return_metadata:
+        usage = resp.usage
+        metadata = {
+            "model": model,
+            "tokens": {
+                "input": usage.prompt_tokens if usage else 0,
+                "output": usage.completion_tokens if usage else 0,
+                "total": usage.total_tokens if usage else 0
+            },
+            "api_params": {
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+        }
+        return response_text, metadata
+    
+    return response_text
 
 
 # === LLM 연결 진단 패널 ===

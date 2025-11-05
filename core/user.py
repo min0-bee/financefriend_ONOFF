@@ -13,7 +13,9 @@ def _read_local_user_id():
     💾 로컬에 저장된 user_info.json에서 user_id를 읽어옵니다.
     - Streamlit 앱은 로그인 기능이 없으므로, 
       익명 사용자에게도 고유 user_id를 부여하고 로컬에 저장해 재사용합니다.
-    - 예: {"user_id": "user_12ab34cd", "created_at": "2025-10-22T07:30:00Z"}
+    - 예: {"user_id": "7b4395ed-af96-41aa-b1ff-c24062b2986f", "created_at": "2025-10-22T07:30:00Z"}
+    - UUID 형식 사용 (서버와 동일)
+    - 하위 호환성: 기존 user_xxx 형식도 지원
     """
     try:
         if os.path.exists(USER_FILE):
@@ -82,6 +84,15 @@ def get_or_create_user_id() -> str:
     # 2️⃣ 로컬 캐시된 user_id 사용
     uid_local = _read_local_user_id()
     if uid_local:
+        # 기존 user_xxx 형식이면 UUID로 마이그레이션 (서버와 맞추기)
+        if uid_local.startswith("user_") and len(uid_local) < 36:
+            # 기존 user_xxx 형식은 서버 연결 시 자동으로 UUID로 변환됨
+            # 여기서는 그대로 반환 (서버 연결 후 _ensure_backend_user에서 자동 교체)
+            pass
+        else:
+            # UUID 형식이면 그대로 사용
+            pass
+        
         # URL 파라미터로 다시 세팅 (새로고침 시 유지)
         try:
             st.query_params["uid"] = uid_local
@@ -93,7 +104,8 @@ def get_or_create_user_id() -> str:
         return uid_local
 
     # 3️⃣ 위 두 가지 모두 없으면 새 user_id 생성
-    new_uid = f"user_{uuid.uuid4().hex[:8]}"  # 랜덤 8자리 UUID
+    # 서버와 동일한 UUID 형식 사용 (36자리 UUID)
+    new_uid = str(uuid.uuid4())  # UUID 형식: "7b4395ed-af96-41aa-b1ff-c24062b2986f"
     _write_local_user_id(new_uid)             # 로컬 저장
 
     # 생성된 user_id를 URL 파라미터에도 반영
