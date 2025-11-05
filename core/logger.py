@@ -59,9 +59,24 @@ def get_supabase_client() -> Optional[Any]:
         return _supabase_client
     
     if not SUPABASE_AVAILABLE or not SUPABASE_ENABLE:
+        if SUPABASE_ENABLE and not SUPABASE_AVAILABLE:
+            try:
+                st.warning("⚠️ Supabase 라이브러리가 설치되지 않았습니다. pip install supabase를 실행하세요.")
+            except:
+                pass
         return None
     
     if not SUPABASE_URL or not SUPABASE_KEY:
+        if SUPABASE_ENABLE:
+            try:
+                missing = []
+                if not SUPABASE_URL:
+                    missing.append("SUPABASE_URL")
+                if not SUPABASE_KEY:
+                    missing.append("SUPABASE_KEY")
+                st.warning(f"⚠️ Supabase 설정이 누락되었습니다: {', '.join(missing)}")
+            except:
+                pass
         return None
     
     try:
@@ -69,7 +84,8 @@ def get_supabase_client() -> Optional[Any]:
         _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
         return _supabase_client
     except Exception as e:
-        if API_SHOW_ERRORS:
+        # Supabase 에러는 항상 표시 (API 설정과 무관)
+        if SUPABASE_ENABLE:
             try:
                 st.warning(f"⚠️ Supabase 클라이언트 생성 실패: {str(e)}")
             except:
@@ -1620,9 +1636,10 @@ def _log_to_event_log(event_name: str, **kwargs) -> Tuple[bool, Optional[str]]:
         return True, None
     except Exception as e:
         error_msg = str(e)
-        if API_SHOW_ERRORS:
+        # Supabase 에러는 SUPABASE_ENABLE이 True일 때 항상 표시 (API 설정과 무관)
+        if SUPABASE_ENABLE:
             try:
-                st.warning(f"⚠️ event_log 삽입 실패 ({event_name}): {error_msg}")
+                st.warning(f"⚠️ Supabase event_log 삽입 실패 ({event_name}): {error_msg}")
             except:
                 pass
         return False, error_msg
