@@ -313,10 +313,10 @@ def _save_embeddings_cache(documents: List[str], embeddings, metadatas: List[Dic
 
 
 # ─────────────────────────────────────────────────────────────
-# 📂 임베딩 벡터 로드
+# 📂 임베딩 벡터 로드 (로컬 캐시)
 # ─────────────────────────────────────────────────────────────
 def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
-    """저장된 임베딩 벡터를 캐시 파일에서 로드"""
+    """저장된 임베딩 벡터를 로컬 캐시 파일에서 로드"""
     try:
         # 체크섬 확인
         checksum_path = _get_checksum_cache_path()
@@ -337,19 +337,170 @@ def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
             return pickle.load(f)
     
     except Exception as e:
-        st.warning(f"⚠️ 임베딩 캐시 로드 실패: {e}")
+        st.warning(f"⚠️ 로컬 임베딩 캐시 로드 실패: {e}")
         return None
 
 
 # ─────────────────────────────────────────────────────────────
-# 🧠 RAG 시스템 초기화 및 벡터 DB 구축 (최적화 버전)
+# ☁️ Supabase Storage에 임베딩 저장
+# ─────────────────────────────────────────────────────────────
+def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: List[Dict], ids: List[str], checksum: str) -> bool:
+    """Supabase Storage에 임베딩 벡터 저장"""
+    if not SUPABASE_ENABLE:
+        return False
+    
+    supabase = get_supabase_client()
+    if not supabase:
+        return False
+    
+    try:
+        # 1. 임베딩 데이터 준비
+        cache_data = {
+            'documents': documents,
+            'embeddings': embeddings.tolist() if hasattr(embeddings, 'tolist') else embeddings,
+            'metadatas': metadatas,
+            'ids': ids
+        }
+        
+        # 2. pickle로 직렬화
+        pickled_data = pickle.dumps(cache_data)
+        
+        # 3. Storage 버킷과 경로 설정
+        bucket_name = "glossary-cache"
+        storage_path = f"embeddings/{checksum}.pkl"
+        
+        # 4. Storage에 업로드 (기존 파일이 있으면 덮어쓰기)
+        try:
+            # 기존 파일 삭제 시도 (있으면)
+            supabase.storage.from_(bucket_name).remove([storage_path])
+        except:
+            pass  # 파일이 없으면 무시
+        
+        # 새 파일 업로드
+        supabase.storage.from_(bucket_name).upload(
+            storage_path,
+            pickled_data,
+            file_options={"content-type": "application/octet-stream", "upsert": "true"}
+        )
+        
+        # 5. 메타데이터를 테이블에 저장 (glossary_embeddings 테이블)
+        try:
+            supabase.table("glossary_embeddings").upsert({
+                "checksum": checksum,
+                "storage_path": storage_path,
+                "term_count": len(documents),
+                "updated_at": "now()"
+            }).execute()
+        except Exception as table_error:
+            # 테이블이 없으면 경고만 (Storage는 성공했으므로)
+            st.warning(f"⚠️ glossary_embeddings 테이블 저장 실패: {table_error}")
+        
+        return True
+    
+    except Exception as e:
+        st.warning(f"⚠️ Supabase Storage 저장 실패: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────
+# ☁️ Supabase Storage에서 임베딩 로드
+# ─────────────────────────────────────────────────────────────
+def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
+    """Supabase Storage에서 임베딩 벡터 로드 (1순위)"""
+    if not SUPABASE_ENABLE:
+        return None
+    
+    supabase = get_supabase_client()
+    if not supabase:
+        return None
+    
+    try:
+        # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
+        bucket_name = "glossary-cache"
+        storage_path = f"embeddings/{checksum}.pkl"
+        
+        try:
+            # 메타데이터 확인 (있으면 체크섬 검증)
+            result = supabase.table("glossary_embeddings").select("*").eq("checksum", checksum).execute()
+            if result.data and len(result.data) > 0:
+                # 메타데이터가 있으면 해당 경로 사용
+                metadata = result.data[0]
+                storage_path = metadata.get("storage_path", storage_path)
+        except:
+            # 테이블이 없어도 Storage에서 직접 확인
+            pass
+        
+        # 2. Storage에서 다운로드
+        response = supabase.storage.from_(bucket_name).download(storage_path)
+        
+        if not response:
+            return None
+        
+        # 3. pickle로 역직렬화
+        return pickle.loads(response)
+    
+    except Exception as e:
+        # 파일이 없거나 에러 발생 시 None 반환 (조용히 실패)
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔄 하이브리드 로드: Supabase 우선, 로컬 Fallback
+# ─────────────────────────────────────────────────────────────
+def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
+    """
+    임베딩 벡터 로드 (하이브리드 방식)
+    
+    우선순위:
+    1. Supabase Storage (중앙 저장소, 빠른 다운로드)
+    2. 로컬 캐시 파일 (Fallback)
+    3. None (새로 생성 필요)
+    """
+    # 1순위: Supabase Storage
+    cached_data = _load_embeddings_from_supabase(checksum)
+    if cached_data:
+        # Supabase에서 로드 성공 시 로컬에도 백업 저장 (선택적)
+        try:
+            _save_embeddings_cache(
+                cached_data['documents'],
+                cached_data['embeddings'],
+                cached_data['metadatas'],
+                cached_data['ids'],
+                checksum
+            )
+        except:
+            pass  # 로컬 저장 실패해도 무시
+        return cached_data
+    
+    # 2순위: 로컬 캐시
+    cached_data = _load_embeddings_cache(checksum)
+    if cached_data:
+        # 로컬에 있으면 Supabase에도 백업 저장 (선택적, 비동기로 처리 가능)
+        try:
+            _save_embeddings_to_supabase(
+                cached_data['documents'],
+                cached_data['embeddings'],
+                cached_data['metadatas'],
+                cached_data['ids'],
+                checksum
+            )
+        except:
+            pass  # Supabase 저장 실패해도 무시
+        return cached_data
+    
+    # 3순위: 없음 (새로 생성 필요)
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
+# 🧠 RAG 시스템 초기화 및 벡터 DB 구축 (하이브리드 최적화 버전)
 # - 임베딩 모델: 전역 캐시로 재사용 (세션마다 재로드 방지)
-# - 임베딩 벡터: pickle 파일로 저장하여 재사용 (CSV 변경 시에만 재계산)
+# - 임베딩 벡터: Supabase Storage 우선, 로컬 Fallback (하이브리드)
 # - ChromaDB: persistent 모드로 디스크에 저장 (세션 간 유지)
 # - CSV 체크섬: 파일 변경 감지하여 자동 재임베딩
 # ─────────────────────────────────────────────────────────────
 def initialize_rag_system():
-    """RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (캐시 최적화)"""
+    """RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (하이브리드 캐시)"""
 
     # 세션에 이미 초기화되어 있으면 스킵
     if "rag_initialized" in st.session_state and st.session_state.rag_initialized:
@@ -387,8 +538,9 @@ def initialize_rag_system():
             )
         )
 
-        # 4️⃣ 캐시에서 임베딩 로드 시도
-        cached_data = _load_embeddings_cache(csv_checksum)
+        # 4️⃣ 하이브리드 방식으로 임베딩 로드 시도 (Supabase 우선, 로컬 Fallback)
+        with st.spinner("🔄 임베딩 벡터 로드 중..."):
+            cached_data = _load_embeddings_with_fallback(csv_checksum)
         
         # 5️⃣ 컬렉션 가져오기 또는 생성
         collection_name = "financial_terms"
@@ -406,7 +558,10 @@ def initialize_rag_system():
                 st.session_state.rag_embedding_model = embedding_model
                 st.session_state.rag_initialized = True
                 st.session_state.rag_term_count = len(documents)
-                st.success(f"✅ RAG 시스템 초기화 완료! (캐시 사용, {len(documents)}개 용어)")
+                
+                # 캐시 소스 확인 (간단히 SUPABASE_ENABLE 여부만 확인)
+                cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+                st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
                 return  # 캐시 사용으로 빠른 종료
             elif cached_data is None:
                 # CSV 파일이 변경되었거나 캐시가 없음 - 재생성 필요
@@ -493,8 +648,14 @@ def initialize_rag_system():
                     ids=ids
                 )
 
-                # 8️⃣ 임베딩 벡터를 캐시로 저장 (다음 세션에서 재사용)
-                _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
+                # 8️⃣ 임베딩 벡터 저장 (하이브리드: Supabase 우선, 로컬 Fallback)
+                # Supabase Storage에 저장 (1순위)
+                if _save_embeddings_to_supabase(documents, embeddings, metadatas, ids, csv_checksum):
+                    # Supabase 저장 성공 시 로컬에도 백업
+                    _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
+                else:
+                    # Supabase 실패 시 로컬에만 저장
+                    _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
 
         # 9️⃣ 세션 상태에 저장
         st.session_state.rag_collection = collection
@@ -504,9 +665,11 @@ def initialize_rag_system():
 
         # 캐시 사용 여부에 따른 메시지
         if cached_data is not None:
-            st.success(f"✅ RAG 시스템 초기화 완료! (캐시 사용, {len(documents)}개 용어)")
+            cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+            st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
         else:
-            st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, 캐시 저장됨)")
+            save_source = "Supabase + 로컬" if SUPABASE_ENABLE else "로컬"
+            st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, {save_source}에 저장됨)")
 
     except Exception as e:
         st.error(f"❌ RAG 초기화 실패: {e}")
