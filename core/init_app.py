@@ -1,6 +1,6 @@
 # === 부트스트랩 인라인 ===
-from core.user import init_session_and_user
-from core.logger import log_event
+from financefriend_ONOFF.core.user import init_session_and_user
+from financefriend_ONOFF.core.logger import log_event
 from data.news import collect_news
 from rag.glossary import ensure_financial_terms
 import streamlit as st

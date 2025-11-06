@@ -5,7 +5,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 import streamlit as st
-from core.config import LOG_DIR, LOG_FILE
+from financefriend_ONOFF.core.config import LOG_DIR, LOG_FILE
 
 # 1) 실제 사용하는 모든 칼럼을 헤더에 “고정”
 CSV_HEADER = [
