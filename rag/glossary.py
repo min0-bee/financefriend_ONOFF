@@ -2,106 +2,28 @@
 ═══════════════════════════════════════════════════════════════════════
 📚 금융 용어 사전 모듈 (RAG 시스템 통합)
 ═══════════════════════════════════════════════════════════════════════
-
-## 📌 주요 변경 사항
-
-### 1️⃣ 기존 시스템 (주석처리됨)
-   - DEFAULT_TERMS 하드코딩 사전 (5개 용어)
-   - 정적 용어 검색만 가능
-
-### 2️⃣ 신규 RAG 시스템
-   - CSV 기반 240+ 금융용어 로드
-   - 벡터 데이터베이스 (ChromaDB) 연동
-   - 의미 기반 유사도 검색 지원
-   - 한국어 임베딩 모델 (jhgan/ko-sroberta-multitask)
-
-## 🔧 필수 라이브러리 설치
-```bash
-pip install chromadb sentence-transformers pandas
-```
-
-## 📂 파일 구조
-```
-rag/
-├── glossary.py (현재 파일)
-└── glossary/
-    └── 금융용어사전.csv (240+ 용어)
-```
-
-## 🚀 사용 방법
-
-### 초기화 (자동)
-```python
-from rag.glossary import ensure_financial_terms
-
-# 앱 시작 시 자동으로 RAG 초기화
-ensure_financial_terms()
-```
-
-### 용어 설명
-```python
-from rag.glossary import explain_term
-
-# RAG 벡터 검색으로 유사 용어 자동 매칭
-explanation = explain_term("양적완화")
-print(explanation)
-```
-
-### 본문 하이라이트
-```python
-from rag.glossary import highlight_terms
-
-text = "한국은행이 기준금리를 인상했다"
-highlighted = highlight_terms(text)
-# 결과: 한국은행이 <mark>기준금리</mark>를 인상했다
-```
-
-### 벡터 검색 (고급)
-```python
-from rag.glossary import search_terms_by_rag
-
-# 자연어 질문으로 관련 용어 찾기
-results = search_terms_by_rag("중앙은행이 돈을 푸는 정책", top_k=3)
-# 결과: [{'term': '양적완화', ...}, {'term': '기준금리', ...}, ...]
-```
-
-## 🔄 Fallback 메커니즘
-- RAG 초기화 실패 시 자동으로 DEFAULT_TERMS 사전 사용
-- CSV 파일 없어도 기본 5개 용어로 동작 보장
-
-## 📊 CSV 파일 형식
-- 컬럼: 금융용어, 유의어, 정의, 비유, 왜 중요?, 오해 교정, 예시, 단어 난이도
-- 인코딩: UTF-8
-═══════════════════════════════════════════════════════════════════════
 """
 
 import re
 import streamlit as st
-
-# ═════════════════════════════════════════════════════════════
-# 🆕 RAG 시스템 추가: CSV 기반 금융용어 벡터 검색
-# - ChromaDB: 벡터 데이터베이스로 유사도 검색 지원
-# - SentenceTransformer: 한국어 임베딩 모델
-# - pandas: CSV 파일 로드
-# ═════════════════════════════════════════════════════════════
+import pickle
+import hashlib
+import json
+import gzip
 import os
 import pandas as pd
 from typing import Dict, List, Optional
+from financefriend_ONOFF.persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
+from core.logger import get_supabase_client
+from core.config import SUPABASE_ENABLE
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
 
-try:
-    import chromadb
-    from chromadb.config import Settings
-except Exception:
-    chromadb = None
-    Settings = None
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
-
-from persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
-
+# ─────────────────────────────────────────────────────────────
+# 🚀 전역 캐시: 임베딩 모델 (세션 간 재사용)
+# ─────────────────────────────────────────────────────────────
+_embedding_model_cache = None
 _RAG_AVAILABLE = chromadb is not None and SentenceTransformer is not None
 
 # ─────────────────────────────────────────────────────────────
@@ -214,10 +136,7 @@ def highlight_terms(text: str) -> str:
     # 1️⃣ RAG가 초기화되어 있으면 RAG의 모든 용어 사용
     if st.session_state.get("rag_initialized", False):
         try:
-            collection = st.session_state.get("rag_collection")
-            if collection is None:
-                raise ValueError("RAG 컬렉션이 없습니다")
-            
+            collection = st.session_state.rag_collection
             # 모든 문서의 메타데이터에서 용어 추출
             all_data = collection.get()
             if all_data and all_data['metadatas']:
@@ -225,9 +144,13 @@ def highlight_terms(text: str) -> str:
                     term = metadata.get('term', '').strip()
                     if term:
                         terms_to_highlight.add(term)
+                    # 유의어도 하이라이트 대상에 추가
+                    # synonym = metadata.get('synonym', '').strip()
+                    # if synonym:
+                    #     terms_to_highlight.add(synonym)
         except Exception as e:
-            # RAG 오류 시 Fallback: 기본 사전 사용
-            st.session_state.rag_initialized = False  # 실패 상태로 표시
+            st.warning(f"⚠️ RAG 용어 로드 중 오류, 기본 사전 사용: {e}")
+            # Fallback: 기존 하드코딩된 사전 사용
             terms_to_highlight = set(st.session_state.get("financial_terms", DEFAULT_TERMS).keys())
     else:
         # 2️⃣ RAG 미초기화 시 기존 사전 사용
@@ -290,6 +213,350 @@ def _fmt(header_icon: str, header_text: str, body_md: str) -> str:
     return f"{header_icon} **{header_text}**\n\n{body_md}\n"
 
 
+# ─────────────────────────────────────────────────────────────
+# 📁 CSV 파일에서 금융용어 로드
+# - rag/glossary/금융용어.csv 파일을 pandas로 읽어옴
+# - 컬럼: 번호, 금융용어, 정의, 비유, 왜 중요?, 오해 교정, 예시
+# ─────────────────────────────────────────────────────────────
+def load_glossary_from_csv() -> pd.DataFrame:
+    """금융용어.csv 파일을 로드하여 DataFrame으로 반환"""
+    csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
+
+    if not os.path.exists(csv_path):
+        st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(csv_path, encoding="utf-8")
+        # 결측치를 빈 문자열로 처리
+        df = df.fillna("")
+        return df
+    except Exception as e:
+        st.error(f"❌ CSV 로드 중 오류 발생: {e}")
+        return pd.DataFrame()
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔐 CSV 파일 체크섬 계산 (변경 감지용)
+# ─────────────────────────────────────────────────────────────
+def _calculate_csv_checksum(csv_path: str) -> str:
+    """CSV 파일의 체크섬을 계산하여 변경 여부 확인"""
+    try:
+        with open(csv_path, 'rb') as f:
+            file_hash = hashlib.md5(f.read()).hexdigest()
+        return file_hash
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────
+# 🚀 임베딩 모델 로드 (전역 캐시 사용)
+# ─────────────────────────────────────────────────────────────
+def _get_embedding_model():
+    """임베딩 모델을 전역 캐시에서 로드하거나 새로 로드"""
+    global _embedding_model_cache
+    
+    if _embedding_model_cache is None:
+        _embedding_model_cache = SentenceTransformer('jhgan/ko-sroberta-multitask')
+    
+    return _embedding_model_cache
+
+
+# ─────────────────────────────────────────────────────────────
+# 💾 임베딩 벡터 캐시 파일 경로
+# ─────────────────────────────────────────────────────────────
+def _get_cache_dir():
+    """캐시 디렉토리 경로 반환"""
+    cache_dir = os.path.join(os.path.dirname(__file__), "glossary", ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _get_embeddings_cache_path():
+    """임베딩 벡터 캐시 파일 경로"""
+    return os.path.join(_get_cache_dir(), "embeddings.pkl")
+
+
+def _get_metadata_cache_path():
+    """메타데이터 캐시 파일 경로"""
+    return os.path.join(_get_cache_dir(), "metadata.pkl")
+
+
+def _get_checksum_cache_path():
+    """체크섬 캐시 파일 경로"""
+    return os.path.join(_get_cache_dir(), "checksum.json")
+
+
+# ─────────────────────────────────────────────────────────────
+# 💾 임베딩 벡터 저장
+# ─────────────────────────────────────────────────────────────
+def _save_embeddings_cache(documents: List[str], embeddings, metadatas: List[Dict], ids: List[str], checksum: str):
+    """임베딩 벡터와 메타데이터를 캐시 파일로 저장"""
+    try:
+        cache_dir = _get_cache_dir()
+        
+        # 임베딩 벡터 저장
+        with open(_get_embeddings_cache_path(), 'wb') as f:
+            pickle.dump({
+                'documents': documents,
+                'embeddings': embeddings,
+                'metadatas': metadatas,
+                'ids': ids
+            }, f)
+        
+        # 체크섬 저장
+        with open(_get_checksum_cache_path(), 'w', encoding='utf-8') as f:
+            json.dump({'checksum': checksum}, f)
+        
+    except Exception as e:
+        st.warning(f"⚠️ 임베딩 캐시 저장 실패: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 📂 임베딩 벡터 로드
+# ─────────────────────────────────────────────────────────────
+def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
+    """저장된 임베딩 벡터를 캐시 파일에서 로드"""
+    try:
+        # 체크섬 확인
+        checksum_path = _get_checksum_cache_path()
+        if not os.path.exists(checksum_path):
+            return None
+        
+        with open(checksum_path, 'r', encoding='utf-8') as f:
+            cached_data = json.load(f)
+            if cached_data.get('checksum') != checksum:
+                return None  # CSV 파일이 변경됨
+        
+        # 임베딩 벡터 로드
+        embeddings_path = _get_embeddings_cache_path()
+        if not os.path.exists(embeddings_path):
+            return None
+        
+        with open(embeddings_path, 'rb') as f:
+            return pickle.load(f)
+    
+    except Exception as e:
+        st.warning(f"⚠️ 임베딩 캐시 로드 실패: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# 🧠 RAG 시스템 초기화 및 벡터 DB 구축 (최적화 버전)
+# - 임베딩 모델: 전역 캐시로 재사용 (세션마다 재로드 방지)
+# - 임베딩 벡터: pickle 파일로 저장하여 재사용 (CSV 변경 시에만 재계산)
+# - ChromaDB: persistent 모드로 디스크에 저장 (세션 간 유지)
+# - CSV 체크섬: 파일 변경 감지하여 자동 재임베딩
+# ─────────────────────────────────────────────────────────────
+def initialize_rag_system():
+    """RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (캐시 최적화)"""
+
+    # 세션에 이미 초기화되어 있으면 스킵
+    if "rag_initialized" in st.session_state and st.session_state.rag_initialized:
+        return
+
+    try:
+        # 1️⃣ CSV 로드 및 체크섬 계산
+        csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
+        if not os.path.exists(csv_path):
+            st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
+            st.session_state.rag_initialized = False
+            return
+        
+        df = load_glossary_from_csv()
+        if df.empty:
+            st.warning("⚠️ CSV 파일이 비어있어 기본 용어 사전을 사용합니다.")
+            st.session_state.rag_initialized = False
+            return
+        
+        # CSV 파일 체크섬 계산 (변경 감지용)
+        csv_checksum = _calculate_csv_checksum(csv_path)
+
+        # 2️⃣ 임베딩 모델 로드 (전역 캐시 사용)
+        embedding_model = _get_embedding_model()
+        if embedding_model is None:
+            with st.spinner("🔄 한국어 임베딩 모델 로딩 중..."):
+                embedding_model = _get_embedding_model()
+
+        # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드)
+        chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
+        chroma_client = chromadb.PersistentClient(
+            path=chroma_db_path,
+            settings=Settings(
+                anonymized_telemetry=False
+            )
+        )
+
+        # 4️⃣ 캐시에서 임베딩 로드 시도
+        cached_data = _load_embeddings_cache(csv_checksum)
+        
+        # 5️⃣ 컬렉션 가져오기 또는 생성
+        collection_name = "financial_terms"
+        try:
+            collection = chroma_client.get_collection(name=collection_name)
+            # 컬렉션이 존재하고 캐시된 데이터가 있으면 빠른 종료
+            if collection.count() > 0 and cached_data is not None:
+                # 캐시된 데이터 사용
+                documents = cached_data['documents']
+                metadatas = cached_data['metadatas']
+                ids = cached_data['ids']
+                
+                # 세션 상태에 저장
+                st.session_state.rag_collection = collection
+                st.session_state.rag_embedding_model = embedding_model
+                st.session_state.rag_initialized = True
+                st.session_state.rag_term_count = len(documents)
+                st.success(f"✅ RAG 시스템 초기화 완료! (캐시 사용, {len(documents)}개 용어)")
+                return  # 캐시 사용으로 빠른 종료
+            elif cached_data is None:
+                # CSV 파일이 변경되었거나 캐시가 없음 - 재생성 필요
+                try:
+                    chroma_client.delete_collection(name=collection_name)
+                except:
+                    pass
+                collection = chroma_client.create_collection(
+                    name=collection_name,
+                    metadata={"description": "금융 용어 사전 벡터 DB"}
+                )
+        except:
+            # 컬렉션이 없으면 생성
+            collection = chroma_client.create_collection(
+                name=collection_name,
+                metadata={"description": "금융 용어 사전 벡터 DB"}
+            )
+
+        # 6️⃣ 캐시된 데이터가 있으면 사용, 없으면 새로 생성
+        if cached_data is not None:
+            # 캐시된 데이터 사용
+            documents = cached_data['documents']
+            embeddings = cached_data['embeddings']
+            metadatas = cached_data['metadatas']
+            ids = cached_data['ids']
+            
+            # 컬렉션에 데이터가 없으면 추가
+            if collection.count() == 0:
+                collection.add(
+                    documents=documents,
+                    metadatas=metadatas,
+                    embeddings=embeddings.tolist() if hasattr(embeddings, 'tolist') else embeddings,
+                    ids=ids
+                )
+        else:
+            # 6️⃣ 캐시가 없거나 CSV가 변경됨 - 새로 생성
+            documents = []
+            metadatas = []
+            ids = []
+
+            for idx, row in df.iterrows():
+                term = str(row.get("금융용어", "")).strip()
+                if not term:  # 빈 용어는 스킵
+                    continue
+
+                # 검색 문서: 용어 + 유의어 + 정의 + 비유를 결합
+                synonym = str(row.get("유의어", "")).strip()
+                definition = str(row.get("정의", "")).strip()
+                analogy = str(row.get("비유", "")).strip()
+
+                # 벡터화할 텍스트 생성
+                search_text = f"{term}"
+                if synonym:
+                    search_text += f" ({synonym})"
+                search_text += f" - {definition}"
+                if analogy:
+                    search_text += f" | 비유: {analogy}"
+
+                documents.append(search_text)
+
+                # 메타데이터: 전체 정보 저장
+                metadatas.append({
+                    "term": term,
+                    "synonym": synonym,
+                    "definition": definition,
+                    "analogy": analogy,
+                    "importance": str(row.get("왜 중요?", "")).strip(),
+                    "correction": str(row.get("오해 교정", "")).strip(),
+                    "example": str(row.get("예시", "")).strip(),
+                    "difficulty": str(row.get("단어 난이도", "")).strip(),
+                })
+
+                ids.append(f"term_{idx}")
+
+            # 7️⃣ 임베딩 생성 및 DB에 추가
+            with st.spinner(f"🔄 {len(documents)}개 금융용어 벡터화 중..."):
+                embeddings = embedding_model.encode(documents, show_progress_bar=False)
+
+                # 컬렉션에 추가
+                collection.add(
+                    documents=documents,
+                    metadatas=metadatas,
+                    embeddings=embeddings.tolist(),
+                    ids=ids
+                )
+
+                # 8️⃣ 임베딩 벡터를 캐시로 저장 (다음 세션에서 재사용)
+                _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
+
+        # 9️⃣ 세션 상태에 저장
+        st.session_state.rag_collection = collection
+        st.session_state.rag_embedding_model = embedding_model
+        st.session_state.rag_initialized = True
+        st.session_state.rag_term_count = len(documents)
+
+        # 캐시 사용 여부에 따른 메시지
+        if cached_data is not None:
+            st.success(f"✅ RAG 시스템 초기화 완료! (캐시 사용, {len(documents)}개 용어)")
+        else:
+            st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, 캐시 저장됨)")
+
+    except Exception as e:
+        st.error(f"❌ RAG 초기화 실패: {e}")
+        st.session_state.rag_initialized = False
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔍 RAG 기반 용어 검색
+# - 사용자 질문을 벡터화하여 유사한 용어 검색
+# - 상위 k개의 관련 용어 반환
+# ─────────────────────────────────────────────────────────────
+def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
+    """RAG를 사용하여 질문과 관련된 금융 용어 검색"""
+
+    if not st.session_state.get("rag_initialized", False):
+        return []
+
+    try:
+        collection = st.session_state.rag_collection
+        embedding_model = st.session_state.rag_embedding_model
+
+        # 쿼리 임베딩
+        query_embedding = embedding_model.encode([query])[0]
+
+        # 유사도 검색
+        results = collection.query(
+            query_embeddings=[query_embedding.tolist()],
+            n_results=top_k
+        )
+
+        # 결과 포맷팅
+        matched_terms = []
+        if results and results['metadatas']:
+            for metadata in results['metadatas'][0]:
+                matched_terms.append(metadata)
+
+        return matched_terms
+
+    except Exception as e:
+        st.error(f"❌ RAG 검색 중 오류: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────────────────────
+# 🦉 챗봇 응답용: RAG 기반 용어 설명 생성 (기존 함수 대체)
+# - 변경 사항:
+#   1. 기존: 하드코딩된 DEFAULT_TERMS 사전에서 검색
+#   2. 신규: RAG 벡터 검색으로 유사 용어 찾기
+#   3. Fallback: RAG 실패 시 기존 방식으로 동작
+# ─────────────────────────────────────────────────────────────
 def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
     """용어 설명 생성 (RAG 정확 매칭 우선, 실패 시 기본 사전 사용)"""
     rag_info: Optional[Dict] = None
