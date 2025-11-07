@@ -16,8 +16,11 @@ def init_app():
     with st.spinner("👤 사용자 세션 초기화 중..."):
         init_session_and_user()
 
-    # ✅ 1.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (선택적)
-    # event_log 중심 모드에서는 실패해도 계속 진행
+    # ✅ 2. 금융 용어 사전 초기화 (최우선 - RAG 시스템 시작)
+    with st.spinner("📚 금융 용어 사전 초기화 중..."):
+        ensure_financial_terms()
+
+    # ✅ 2.5. 서버 연결 (선택적) - RAG 초기화가 끝난 뒤에 시도
     if API_ENABLE:
         user_id = st.session_state.get("user_id")
 
@@ -27,11 +30,7 @@ def init_app():
                     _ensure_backend_user(user_id, silent=True)
                     _ensure_backend_session()
             except Exception:
-                pass  # 연결 실패해도 앱은 계속 진행
-
-    # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드) - 가장 무거운 작업
-    with st.spinner("📚 금융 용어 사전 초기화 중..."):
-        ensure_financial_terms()
+                pass  # 연결 실패해도 앱 진행에는 영향 없음
 
     # ✅ 3. 세션 상태 기본값 설정 (빠른 작업)
     st.session_state.setdefault("selected_article", None)
