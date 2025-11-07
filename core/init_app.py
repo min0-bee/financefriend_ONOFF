@@ -8,11 +8,15 @@ import streamlit as st
 
 
 def init_app():   
-    # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등)
+    # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등) - 빠른 작업
     init_session_and_user()
     
-    # ✅ 1.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성
+    # ✅ 2. 금융 용어 사전 초기화 (최우선 - RAG 시스템 시작) - 스피너를 빨리 표시하기 위해
+    ensure_financial_terms()
+    
+    # ✅ 2.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (지연 실행)
     # event_log 중심 모드에서는 선택적으로 실행 (실패해도 계속 진행)
+    # RAG 초기화 후에 실행하여 스피너가 먼저 표시되도록 함
     if API_ENABLE:
         user_id = st.session_state.get("user_id")
         if user_id:
@@ -20,9 +24,6 @@ def init_app():
             _ensure_backend_user(user_id, silent=True)
             # 서버 세션 생성 (로그 뷰어에서 사용하기 위해 미리 생성)
             _ensure_backend_session()
-
-    # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드)
-    ensure_financial_terms()
 
     # ✅ 3. 세션 상태 기본값 설정
     # 선택된 뉴스 기사 (없을 경우 None)
