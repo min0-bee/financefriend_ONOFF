@@ -93,6 +93,7 @@ from sentence_transformers import SentenceTransformer
 import pickle
 import hashlib
 import json
+import gzip
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 
@@ -373,8 +374,8 @@ def _get_cache_dir():
 
 
 def _get_embeddings_cache_path():
-    """임베딩 벡터 캐시 파일 경로"""
-    return os.path.join(_get_cache_dir(), "embeddings.pkl")
+    """임베딩 벡터 캐시 파일 경로 (gzip 압축)"""
+    return os.path.join(_get_cache_dir(), "embeddings.pkl.gz")
 
 
 def _get_metadata_cache_path():
@@ -391,18 +392,20 @@ def _get_checksum_cache_path():
 # 💾 임베딩 벡터 저장
 # ─────────────────────────────────────────────────────────────
 def _save_embeddings_cache(documents: List[str], embeddings, metadatas: List[Dict], ids: List[str], checksum: str):
-    """임베딩 벡터와 메타데이터를 캐시 파일로 저장"""
+    """임베딩 벡터와 메타데이터를 캐시 파일로 저장 (gzip 압축)"""
     try:
         cache_dir = _get_cache_dir()
         
-        # 임베딩 벡터 저장
-        with open(_get_embeddings_cache_path(), 'wb') as f:
-            pickle.dump({
-                'documents': documents,
-                'embeddings': embeddings,
-                'metadatas': metadatas,
-                'ids': ids
-            }, f)
+        # 임베딩 벡터 저장 (gzip 압축)
+        cache_data = {
+            'documents': documents,
+            'embeddings': embeddings,
+            'metadatas': metadatas,
+            'ids': ids
+        }
+        
+        with gzip.open(_get_embeddings_cache_path(), 'wb') as f:
+            pickle.dump(cache_data, f)
         
         # 체크섬 저장
         with open(_get_checksum_cache_path(), 'w', encoding='utf-8') as f:
@@ -428,12 +431,12 @@ def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
             if cached_data.get('checksum') != checksum:
                 return None  # CSV 파일이 변경됨
         
-        # 임베딩 벡터 로드
+        # 임베딩 벡터 로드 (gzip 압축 해제)
         embeddings_path = _get_embeddings_cache_path()
         if not os.path.exists(embeddings_path):
             return None
         
-        with open(embeddings_path, 'rb') as f:
+        with gzip.open(embeddings_path, 'rb') as f:
             return pickle.load(f)
     
     except Exception as e:
@@ -462,12 +465,13 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
             'ids': ids
         }
         
-        # 2. pickle로 직렬화
+        # 2. pickle로 직렬화 후 gzip 압축
         pickled_data = pickle.dumps(cache_data)
+        compressed_data = gzip.compress(pickled_data)
         
-        # 3. Storage 버킷과 경로 설정
+        # 3. Storage 버킷과 경로 설정 (gzip 확장자)
         bucket_name = "glossary-cache"
-        storage_path = f"embeddings/{checksum}.pkl"
+        storage_path = f"embeddings/{checksum}.pkl.gz"
         
         # 4. Storage에 업로드 (기존 파일이 있으면 덮어쓰기)
         try:
@@ -476,11 +480,11 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
         except:
             pass  # 파일이 없으면 무시
         
-        # 새 파일 업로드
+        # 새 파일 업로드 (gzip 압축된 데이터)
         supabase.storage.from_(bucket_name).upload(
             storage_path,
-            pickled_data,
-            file_options={"content-type": "application/octet-stream", "upsert": "true"}
+            compressed_data,
+            file_options={"content-type": "application/gzip", "upsert": "true"}
         )
         
         # 5. 메타데이터를 테이블에 저장 (glossary_embeddings 테이블)
@@ -517,7 +521,10 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
     try:
         # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         bucket_name = "glossary-cache"
-        storage_path = f"embeddings/{checksum}.pkl"
+        # 기존 .pkl 파일과 새 .pkl.gz 파일 모두 지원 (하위 호환성)
+        storage_path_gz = f"embeddings/{checksum}.pkl.gz"
+        storage_path_pkl = f"embeddings/{checksum}.pkl"
+        storage_path = storage_path_gz  # 기본값: 압축 파일
         
         try:
             # 메타데이터 확인 (있으면 체크섬 검증)
@@ -525,19 +532,41 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
             if result.data and len(result.data) > 0:
                 # 메타데이터가 있으면 해당 경로 사용
                 metadata = result.data[0]
-                storage_path = metadata.get("storage_path", storage_path)
+                storage_path = metadata.get("storage_path", storage_path_gz)
         except:
             # 테이블이 없어도 Storage에서 직접 확인
             pass
         
-        # 2. Storage에서 다운로드
-        response = supabase.storage.from_(bucket_name).download(storage_path)
+        # 2. Storage에서 다운로드 (압축 파일 우선, 없으면 기존 파일)
+        response = None
+        try:
+            response = supabase.storage.from_(bucket_name).download(storage_path_gz)
+        except:
+            # 압축 파일이 없으면 기존 .pkl 파일 시도 (하위 호환성)
+            try:
+                response = supabase.storage.from_(bucket_name).download(storage_path_pkl)
+            except:
+                pass
         
         if not response:
             return None
         
-        # 3. pickle로 역직렬화
-        return pickle.loads(response)
+        # 3. gzip 압축 해제 후 pickle 역직렬화
+        try:
+            # gzip 압축된 데이터인지 확인 (압축 파일 확장자 또는 magic number)
+            is_gzipped = storage_path.endswith('.gz') or (len(response) >= 2 and response[:2] == b'\x1f\x8b')
+            if is_gzipped:
+                decompressed_data = gzip.decompress(response)
+                return pickle.loads(decompressed_data)
+            else:
+                # 기존 .pkl 파일 (압축 없음)
+                return pickle.loads(response)
+        except Exception as e:
+            # 압축 해제 실패 시 기존 방식으로 시도
+            try:
+                return pickle.loads(response)
+            except:
+                return None
     
     except Exception as e:
         # 파일이 없거나 에러 발생 시 None 반환 (조용히 실패)
