@@ -93,6 +93,7 @@ from sentence_transformers import SentenceTransformer
 import pickle
 import hashlib
 import json
+import gzip
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 
@@ -373,7 +374,7 @@ def _get_cache_dir():
 
 
 def _get_embeddings_cache_path():
-    """임베딩 벡터 캐시 파일 경로"""
+    """임베딩 벡터 캐시 파일 경로 (로컬은 압축 없음, 빠른 로드)"""
     return os.path.join(_get_cache_dir(), "embeddings.pkl")
 
 
@@ -391,18 +392,20 @@ def _get_checksum_cache_path():
 # 💾 임베딩 벡터 저장
 # ─────────────────────────────────────────────────────────────
 def _save_embeddings_cache(documents: List[str], embeddings, metadatas: List[Dict], ids: List[str], checksum: str):
-    """임베딩 벡터와 메타데이터를 캐시 파일로 저장"""
+    """임베딩 벡터와 메타데이터를 캐시 파일로 저장 (로컬은 압축 없음, 빠른 로드)"""
     try:
         cache_dir = _get_cache_dir()
         
-        # 임베딩 벡터 저장
+        # 임베딩 벡터 저장 (압축 없음 - 빠른 로드)
+        cache_data = {
+            'documents': documents,
+            'embeddings': embeddings,
+            'metadatas': metadatas,
+            'ids': ids
+        }
+        
         with open(_get_embeddings_cache_path(), 'wb') as f:
-            pickle.dump({
-                'documents': documents,
-                'embeddings': embeddings,
-                'metadatas': metadatas,
-                'ids': ids
-            }, f)
+            pickle.dump(cache_data, f)
         
         # 체크섬 저장
         with open(_get_checksum_cache_path(), 'w', encoding='utf-8') as f:
@@ -428,7 +431,7 @@ def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
             if cached_data.get('checksum') != checksum:
                 return None  # CSV 파일이 변경됨
         
-        # 임베딩 벡터 로드
+        # 임베딩 벡터 로드 (압축 없음 - 빠른 로드)
         embeddings_path = _get_embeddings_cache_path()
         if not os.path.exists(embeddings_path):
             return None
@@ -462,12 +465,13 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
             'ids': ids
         }
         
-        # 2. pickle로 직렬화
+        # 2. pickle로 직렬화 후 gzip 압축
         pickled_data = pickle.dumps(cache_data)
+        compressed_data = gzip.compress(pickled_data)
         
-        # 3. Storage 버킷과 경로 설정
+        # 3. Storage 버킷과 경로 설정 (gzip 확장자)
         bucket_name = "glossary-cache"
-        storage_path = f"embeddings/{checksum}.pkl"
+        storage_path = f"embeddings/{checksum}.pkl.gz"
         
         # 4. Storage에 업로드 (기존 파일이 있으면 덮어쓰기)
         try:
@@ -476,11 +480,11 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
         except:
             pass  # 파일이 없으면 무시
         
-        # 새 파일 업로드
+        # 새 파일 업로드 (gzip 압축된 데이터)
         supabase.storage.from_(bucket_name).upload(
             storage_path,
-            pickled_data,
-            file_options={"content-type": "application/octet-stream", "upsert": "true"}
+            compressed_data,
+            file_options={"content-type": "application/gzip", "upsert": "true"}
         )
         
         # 5. 메타데이터를 테이블에 저장 (glossary_embeddings 테이블)
@@ -517,7 +521,10 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
     try:
         # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         bucket_name = "glossary-cache"
-        storage_path = f"embeddings/{checksum}.pkl"
+        # 기존 .pkl 파일과 새 .pkl.gz 파일 모두 지원 (하위 호환성)
+        storage_path_gz = f"embeddings/{checksum}.pkl.gz"
+        storage_path_pkl = f"embeddings/{checksum}.pkl"
+        storage_path = storage_path_gz  # 기본값: 압축 파일
         
         try:
             # 메타데이터 확인 (있으면 체크섬 검증)
@@ -525,19 +532,41 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
             if result.data and len(result.data) > 0:
                 # 메타데이터가 있으면 해당 경로 사용
                 metadata = result.data[0]
-                storage_path = metadata.get("storage_path", storage_path)
+                storage_path = metadata.get("storage_path", storage_path_gz)
         except:
             # 테이블이 없어도 Storage에서 직접 확인
             pass
         
-        # 2. Storage에서 다운로드
-        response = supabase.storage.from_(bucket_name).download(storage_path)
+        # 2. Storage에서 다운로드 (압축 파일 우선, 없으면 기존 파일)
+        response = None
+        try:
+            response = supabase.storage.from_(bucket_name).download(storage_path_gz)
+        except:
+            # 압축 파일이 없으면 기존 .pkl 파일 시도 (하위 호환성)
+            try:
+                response = supabase.storage.from_(bucket_name).download(storage_path_pkl)
+            except:
+                pass
         
         if not response:
             return None
         
-        # 3. pickle로 역직렬화
-        return pickle.loads(response)
+        # 3. gzip 압축 해제 후 pickle 역직렬화
+        try:
+            # gzip 압축된 데이터인지 확인 (압축 파일 확장자 또는 magic number)
+            is_gzipped = storage_path.endswith('.gz') or (len(response) >= 2 and response[:2] == b'\x1f\x8b')
+            if is_gzipped:
+                decompressed_data = gzip.decompress(response)
+                return pickle.loads(decompressed_data)
+            else:
+                # 기존 .pkl 파일 (압축 없음)
+                return pickle.loads(response)
+        except Exception as e:
+            # 압축 해제 실패 시 기존 방식으로 시도
+            try:
+                return pickle.loads(response)
+            except:
+                return None
     
     except Exception as e:
         # 파일이 없거나 에러 발생 시 None 반환 (조용히 실패)
@@ -608,35 +637,39 @@ def initialize_rag_system():
 
     try:
         # 1️⃣ CSV 로드 및 체크섬 계산
-        csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
-        if not os.path.exists(csv_path):
-            st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
-            st.session_state.rag_initialized = False
-            return
-        
-        df = load_glossary_from_csv()
-        if df.empty:
-            st.warning("⚠️ CSV 파일이 비어있어 기본 용어 사전을 사용합니다.")
-            st.session_state.rag_initialized = False
-            return
-        
-        # CSV 파일 체크섬 계산 (변경 감지용)
-        csv_checksum = _calculate_csv_checksum(csv_path)
+        with st.spinner("📄 금융용어 파일 로드 중..."):
+            csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
+            if not os.path.exists(csv_path):
+                st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
+                st.session_state.rag_initialized = False
+                return
+            
+            df = load_glossary_from_csv()
+            if df.empty:
+                st.warning("⚠️ CSV 파일이 비어있어 기본 용어 사전을 사용합니다.")
+                st.session_state.rag_initialized = False
+                return
+            
+            # CSV 파일 체크섬 계산 (변경 감지용)
+            csv_checksum = _calculate_csv_checksum(csv_path)
 
         # 2️⃣ 임베딩 모델 로드 (전역 캐시 사용)
+        # 첫 실행 시 모델 로드가 매우 느리므로 항상 스피너 표시
         embedding_model = _get_embedding_model()
-        if embedding_model is None:
-            with st.spinner("🔄 한국어 임베딩 모델 로딩 중..."):
+        if embedding_model is None or _embedding_model_cache is None:
+            # 첫 실행 시 모델 로드 (10-20초 소요)
+            with st.spinner("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
                 embedding_model = _get_embedding_model()
 
         # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드)
-        chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
-        chroma_client = chromadb.PersistentClient(
-            path=chroma_db_path,
-            settings=Settings(
-                anonymized_telemetry=False
+        with st.spinner("💾 벡터 데이터베이스 초기화 중..."):
+            chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
+            chroma_client = chromadb.PersistentClient(
+                path=chroma_db_path,
+                settings=Settings(
+                    anonymized_telemetry=False
+                )
             )
-        )
 
         # 4️⃣ 하이브리드 방식으로 임베딩 로드 시도 (Supabase 우선, 로컬 Fallback)
         with st.spinner("🔄 임베딩 벡터 로드 중..."):
@@ -644,97 +677,100 @@ def initialize_rag_system():
         
         # 5️⃣ 컬렉션 가져오기 또는 생성
         collection_name = "financial_terms"
-        try:
-            collection = chroma_client.get_collection(name=collection_name)
-            # 컬렉션이 존재하고 캐시된 데이터가 있으면 빠른 종료
-            if collection.count() > 0 and cached_data is not None:
-                # 캐시된 데이터 사용
-                documents = cached_data['documents']
-                metadatas = cached_data['metadatas']
-                ids = cached_data['ids']
-                
-                # 세션 상태에 저장
-                st.session_state.rag_collection = collection
-                st.session_state.rag_embedding_model = embedding_model
-                st.session_state.rag_initialized = True
-                st.session_state.rag_term_count = len(documents)
-                
-                # 캐시 소스 확인 (간단히 SUPABASE_ENABLE 여부만 확인)
-                cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
-                st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
-                return  # 캐시 사용으로 빠른 종료
-            elif cached_data is None:
-                # CSV 파일이 변경되었거나 캐시가 없음 - 재생성 필요
-                try:
-                    chroma_client.delete_collection(name=collection_name)
-                except:
-                    pass
+        with st.spinner("🔍 벡터 컬렉션 확인 중..."):
+            try:
+                collection = chroma_client.get_collection(name=collection_name)
+                # 컬렉션이 존재하고 캐시된 데이터가 있으면 빠른 종료
+                if collection.count() > 0 and cached_data is not None:
+                    # 캐시된 데이터 사용
+                    documents = cached_data['documents']
+                    metadatas = cached_data['metadatas']
+                    ids = cached_data['ids']
+                    
+                    # 세션 상태에 저장
+                    st.session_state.rag_collection = collection
+                    st.session_state.rag_embedding_model = embedding_model
+                    st.session_state.rag_initialized = True
+                    st.session_state.rag_term_count = len(documents)
+                    
+                    # 캐시 소스 확인 (간단히 SUPABASE_ENABLE 여부만 확인)
+                    cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+                    st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
+                    return  # 캐시 사용으로 빠른 종료
+                elif cached_data is None:
+                    # CSV 파일이 변경되었거나 캐시가 없음 - 재생성 필요
+                    try:
+                        chroma_client.delete_collection(name=collection_name)
+                    except:
+                        pass
+                    collection = chroma_client.create_collection(
+                        name=collection_name,
+                        metadata={"description": "금융 용어 사전 벡터 DB"}
+                    )
+            except:
+                # 컬렉션이 없으면 생성
                 collection = chroma_client.create_collection(
                     name=collection_name,
                     metadata={"description": "금융 용어 사전 벡터 DB"}
                 )
-        except:
-            # 컬렉션이 없으면 생성
-            collection = chroma_client.create_collection(
-                name=collection_name,
-                metadata={"description": "금융 용어 사전 벡터 DB"}
-            )
 
         # 6️⃣ 캐시된 데이터가 있으면 사용, 없으면 새로 생성
         if cached_data is not None:
             # 캐시된 데이터 사용
-            documents = cached_data['documents']
-            embeddings = cached_data['embeddings']
-            metadatas = cached_data['metadatas']
-            ids = cached_data['ids']
-            
-            # 컬렉션에 데이터가 없으면 추가
-            if collection.count() == 0:
-                collection.add(
-                    documents=documents,
-                    metadatas=metadatas,
-                    embeddings=embeddings.tolist() if hasattr(embeddings, 'tolist') else embeddings,
-                    ids=ids
-                )
+            with st.spinner("📦 캐시된 데이터 준비 중..."):
+                documents = cached_data['documents']
+                embeddings = cached_data['embeddings']
+                metadatas = cached_data['metadatas']
+                ids = cached_data['ids']
+                
+                # 컬렉션에 데이터가 없으면 추가
+                if collection.count() == 0:
+                    collection.add(
+                        documents=documents,
+                        metadatas=metadatas,
+                        embeddings=embeddings.tolist() if hasattr(embeddings, 'tolist') else embeddings,
+                        ids=ids
+                    )
         else:
             # 6️⃣ 캐시가 없거나 CSV가 변경됨 - 새로 생성
-            documents = []
-            metadatas = []
-            ids = []
+            with st.spinner("📝 금융용어 데이터 준비 중..."):
+                documents = []
+                metadatas = []
+                ids = []
 
-            for idx, row in df.iterrows():
-                term = str(row.get("금융용어", "")).strip()
-                if not term:  # 빈 용어는 스킵
-                    continue
+                for idx, row in df.iterrows():
+                    term = str(row.get("금융용어", "")).strip()
+                    if not term:  # 빈 용어는 스킵
+                        continue
 
-                # 검색 문서: 용어 + 유의어 + 정의 + 비유를 결합
-                synonym = str(row.get("유의어", "")).strip()
-                definition = str(row.get("정의", "")).strip()
-                analogy = str(row.get("비유", "")).strip()
+                    # 검색 문서: 용어 + 유의어 + 정의 + 비유를 결합
+                    synonym = str(row.get("유의어", "")).strip()
+                    definition = str(row.get("정의", "")).strip()
+                    analogy = str(row.get("비유", "")).strip()
 
-                # 벡터화할 텍스트 생성
-                search_text = f"{term}"
-                if synonym:
-                    search_text += f" ({synonym})"
-                search_text += f" - {definition}"
-                if analogy:
-                    search_text += f" | 비유: {analogy}"
+                    # 벡터화할 텍스트 생성
+                    search_text = f"{term}"
+                    if synonym:
+                        search_text += f" ({synonym})"
+                    search_text += f" - {definition}"
+                    if analogy:
+                        search_text += f" | 비유: {analogy}"
 
-                documents.append(search_text)
+                    documents.append(search_text)
 
-                # 메타데이터: 전체 정보 저장
-                metadatas.append({
-                    "term": term,
-                    "synonym": synonym,
-                    "definition": definition,
-                    "analogy": analogy,
-                    "importance": str(row.get("왜 중요?", "")).strip(),
-                    "correction": str(row.get("오해 교정", "")).strip(),
-                    "example": str(row.get("예시", "")).strip(),
-                    "difficulty": str(row.get("단어 난이도", "")).strip(),
-                })
+                    # 메타데이터: 전체 정보 저장
+                    metadatas.append({
+                        "term": term,
+                        "synonym": synonym,
+                        "definition": definition,
+                        "analogy": analogy,
+                        "importance": str(row.get("왜 중요?", "")).strip(),
+                        "correction": str(row.get("오해 교정", "")).strip(),
+                        "example": str(row.get("예시", "")).strip(),
+                        "difficulty": str(row.get("단어 난이도", "")).strip(),
+                    })
 
-                ids.append(f"term_{idx}")
+                    ids.append(f"term_{idx}")
 
             # 7️⃣ 임베딩 생성 및 DB에 추가
             with st.spinner(f"🔄 {len(documents)}개 금융용어 벡터화 중..."):
@@ -748,7 +784,8 @@ def initialize_rag_system():
                     ids=ids
                 )
 
-                # 8️⃣ 임베딩 벡터 저장 (하이브리드: Supabase 우선, 로컬 Fallback)
+            # 8️⃣ 임베딩 벡터 저장 (하이브리드: Supabase 우선, 로컬 Fallback)
+            with st.spinner("💾 임베딩 벡터 저장 중..."):
                 # Supabase Storage에 저장 (1순위)
                 if _save_embeddings_to_supabase(documents, embeddings, metadatas, ids, csv_checksum):
                     # Supabase 저장 성공 시 로컬에도 백업
