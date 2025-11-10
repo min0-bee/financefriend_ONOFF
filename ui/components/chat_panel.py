@@ -1,10 +1,12 @@
 
 import re
 import time, streamlit as st
+from streamlit.components.v1 import html as st_html
 from core.logger import log_event
-from financefriend_ONOFF.rag.glossary import explain_term, search_terms_by_rag
-from financefriend_ONOFF.core.utils import llm_chat
-from financefriend_ONOFF.persona.persona import albwoong_persona_reply
+from rag.glossary import explain_term, search_terms_by_rag
+from core.utils import llm_chat
+from persona.persona import albwoong_persona_reply
+
 
 # 일반 질문에 대한 LLM 응답
 # ─────────────────────────────────────────────────────────────
@@ -62,15 +64,40 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         st.session_state.intro_shown = True
 
     # 대화 히스토리 렌더(기존 그대로)
-    with st.container(height=400):
-        for message in st.session_state.chat_history:
-            role = message["role"]
-            css = "user-message" if role == "user" else "bot-message"
-            icon = "👤" if role == "user" else "🤖"
-            st.markdown(
-                f'<div class="chat-message {css}">{icon} {message["content"]}</div>',
-                unsafe_allow_html=True
-            )
+    messages_html = []
+    for message in st.session_state.chat_history:
+        role = message["role"]
+        css = "user-message" if role == "user" else "bot-message"
+        icon = "👤" if role == "user" else "🤖"
+        content_html = (
+            message["content"]
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\n", "<br>")
+        )
+        messages_html.append(f'<div class="chat-message {css}">{icon} {content_html}</div>')
+
+    chat_html = (
+        "<div id='chat-scroll-box' class='chat-message-container' "
+        "style='max-height:400px; overflow-y:auto; padding-right:8px;'>"
+        + "".join(messages_html)
+        + "<div id='chat-scroll-anchor'></div></div>"
+    )
+    st.markdown(chat_html, unsafe_allow_html=True)
+    st_html(
+        """
+        <script>
+        const anchor = window.parent.document.getElementById('chat-scroll-anchor');
+        if (anchor) {
+            setTimeout(() => {
+                anchor.scrollIntoView({behavior: "smooth", block: "end"});
+            }, 50);
+        }
+        </script>
+        """,
+        height=0,
+    )
 
     # 입력창
     user_input = st.chat_input("궁금한 금융 용어를 입력하세요...")
@@ -90,15 +117,18 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                 all_data = collection.get()
 
                 if all_data and all_data['metadatas']:
-                    # 정확한 용어 매칭 시도 (단어 경계 고려)
+                    # 정확한 용어 매칭 시도 (조사/문장부호 포함)
+                    def _term_exact_match(text: str, term: str) -> bool:
+                        if not term:
+                            return False
+                        lookahead = r"(?=($|\s|[?!.,]|[은는이가을를과와로도의]))"
+                        pattern = rf"(^|\s){re.escape(term)}{lookahead}"
+                        return re.search(pattern, text, re.IGNORECASE) is not None
+
                     for metadata in all_data['metadatas']:
                         rag_term = metadata.get('term', '').strip()
 
-                        # 단어 경계를 고려한 정확한 매칭 (띄어쓰기, 문장부호 고려)
-                        # \b는 단어 경계를 의미하지만 한글에는 적용 안됨
-                        # 대신 공백이나 문장 시작/끝에서 매칭되는지 확인
-                        pattern_term = r'(^|\s)' + re.escape(rag_term) + r'($|\s|[?!.,])'
-                        if re.search(pattern_term, user_input, re.IGNORECASE):
+                        if _term_exact_match(user_input, rag_term):
                             matched_term = rag_term
                             is_financial_question = True
                             break
@@ -116,15 +146,30 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                         has_financial_keyword = any(kw in user_input for kw in financial_keywords)
 
                         if has_financial_keyword:
+                            RAG_SIM_THRESHOLD = 0.38  # 코사인 거리(0~2, 낮을수록 유사)
                             rag_results = search_terms_by_rag(user_input, top_k=1)
-                            if rag_results and len(rag_results) > 0:
-                                # 유사도가 충분히 높은 경우만 매칭 (거리 확인)
-                                matched_term = rag_results[0].get('term', '')
-                                is_financial_question = True
+                            if rag_results:
+                                candidate = rag_results[0]
+                                candidate_term = (candidate.get('term') or '').strip()
+                                distance = candidate.get('_distance')
+
+                                if candidate_term:
+                                    # distance가 None이면 임시로 허용, 값이 있으면 임계값 비교
+                                    if distance is None or distance <= RAG_SIM_THRESHOLD:
+                                        matched_term = candidate_term
+                                        is_financial_question = True
+                                    else:
+                                        # 거리가 높으면 금융 질문이 아니라고 판단
+                                        matched_term = None
+                                        is_financial_question = False
 
                     if matched_term:
                         # RAG에서 찾은 용어로 설명 생성
-                        explanation = explain_term(matched_term, st.session_state.chat_history)
+                        explanation = explain_term(
+                            matched_term,
+                            st.session_state.chat_history,
+                            question=user_input,
+                        )
                         log_event(
                             "glossary_answer",
                             term=matched_term, source="chat_rag", surface="sidebar",
@@ -137,9 +182,14 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         if explanation is None and not is_financial_question:
             # 단어 경계를 고려한 정확한 매칭
             for term_key in terms.keys():
-                pattern = r'(^|\s)' + re.escape(term_key) + r'($|\s|[?!.,])'
+                lookahead = r"(?=($|\s|[?!.,]|[은는이가을를과와로도의]))"
+                pattern = rf"(^|\s){re.escape(term_key)}{lookahead}"
                 if re.search(pattern, user_input, re.IGNORECASE):
-                    explanation = explain_term(term_key, st.session_state.chat_history)
+                    explanation = explain_term(
+                        term_key,
+                        st.session_state.chat_history,
+                        question=user_input,
+                    )
                     is_financial_question = True
                     log_event(
                         "glossary_answer",
@@ -153,7 +203,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
             if use_openai:
 
                 try:
-                    explanation = albwoong_persona_reply(user_input, style_opt="짧게")
+                    explanation = albwoong_persona_reply(user_input)
                 except Exception as e:
                     # LLM 장애 시 기존 MVP 메시지로 폴백
                     explanation = (

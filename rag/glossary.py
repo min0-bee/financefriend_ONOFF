@@ -87,10 +87,22 @@ import streamlit as st
 import os
 import pandas as pd
 from typing import Dict, List, Optional
-import chromadb
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
-from financefriend_ONOFF.persona.persona import albwoong_persona_rewrite_section
+
+try:
+    import chromadb
+    from chromadb.config import Settings
+except Exception:
+    chromadb = None
+    Settings = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
+
+from persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
+
+_RAG_AVAILABLE = chromadb is not None and SentenceTransformer is not None
 
 # ─────────────────────────────────────────────────────────────
 # ✅ 기본 금융 용어 사전 (RAG/사전 없이도 동작하는 최소 세트)
@@ -146,7 +158,11 @@ def ensure_financial_terms():
 
     # 2️⃣ RAG 시스템 자동 초기화 (최초 1회만)
     if "rag_initialized" not in st.session_state:
-        initialize_rag_system()
+        if not _RAG_AVAILABLE:
+            st.session_state.rag_initialized = False
+            st.warning("⚠️ 고급 용어 검색 모듈이 설치되지 않아 기본 사전을 사용합니다.")
+        else:
+            initialize_rag_system()
 
 # ─────────────────────────────────────────────────────────────
 # 🔴 기존 함수 (주석처리): 하드코딩된 사전 기반 하이라이트
@@ -330,6 +346,10 @@ def load_glossary_from_csv() -> pd.DataFrame:
 def initialize_rag_system():
     """RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩"""
 
+    if not _RAG_AVAILABLE:
+        st.session_state.rag_initialized = False
+        return
+
     # 세션에 이미 초기화되어 있으면 스킵
     if "rag_initialized" in st.session_state and st.session_state.rag_initialized:
         return
@@ -431,6 +451,9 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
     if not st.session_state.get("rag_initialized", False):
         return []
 
+    if not _RAG_AVAILABLE:
+        return []
+
     try:
         collection = st.session_state.rag_collection
         embedding_model = st.session_state.rag_embedding_model
@@ -446,8 +469,12 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
 
         # 결과 포맷팅
         matched_terms = []
-        if results and results['metadatas']:
-            for metadata in results['metadatas'][0]:
+        distances = results.get("distances", [[None] * top_k]) if results else [[None] * top_k]
+
+        if results and results.get('metadatas'):
+            for metadata, distance in zip(results['metadatas'][0], distances[0]):
+                metadata = metadata or {}
+                metadata['_distance'] = distance
                 matched_terms.append(metadata)
 
         return matched_terms
@@ -464,19 +491,14 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
 #   2. 신규: RAG 벡터 검색으로 유사 용어 찾기
 #   3. Fallback: RAG 실패 시 기존 방식으로 동작
 # ─────────────────────────────────────────────────────────────
-def _fmt(header_icon: str, header_text: str, body_md: str) -> str:
-    if not body_md.strip():
-        return ""
-    # 섹션 헤더는 우리가 직접 출력(중복 방지), 본문은 '문장만' 들어오므로 깔끔함
-    return f"{header_icon} **{header_text}**\n\n{body_md}\n"
-
-def explain_term(term: str, chat_history=None) -> str:
+def explain_term(term: str, chat_history=None, question: Optional[str] = None) -> str:
     """
     용어 설명 생성 (RAG 정확 매칭 우선, 실패 시 기존 사전 사용)
-    - 각 섹션을 '반말·간결' 섹션 전용 리라이터로 재작성
-    - 헤더/이모지는 우리 쪽에서만 출력 ⇒ 중복 제거
+    - 참고자료를 LLM에 전달하여 구조화된 템플릿으로 답변 생성
     """
-    # 1) RAG 우선
+    question_text = question or f"{term} 용어 설명해줘"
+
+    # 1) RAG 우선: 참고자료를 구조화하여 전달
     if st.session_state.get("rag_initialized", False):
         try:
             collection = st.session_state.rag_collection
@@ -489,61 +511,64 @@ def explain_term(term: str, chat_history=None) -> str:
                         continue
 
                     definition = metadata.get("definition", "")
-                    analogy    = metadata.get("analogy", "")
+                    analogy = metadata.get("analogy", "")
                     importance = metadata.get("importance", "")
                     correction = metadata.get("correction", "")
-                    example    = metadata.get("example", "")
+                    example = metadata.get("example", "")
 
-                    parts = []
-                    parts.append(f"🤖 **{rag_term}** 에 대해 설명해줄게! 🎯\n")
+                    context = {
+                        "정의": albwoong_persona_rewrite_section(
+                            definition, "정의", term=rag_term, max_sentences=2, min_sentences=1
+                        )
+                        if definition
+                        else "",
+                        "비유": albwoong_persona_rewrite_section(
+                            analogy, "비유로 이해하기", term=rag_term, max_sentences=2, min_sentences=2
+                        )
+                        if analogy
+                        else "",
+                        "중요성": albwoong_persona_rewrite_section(
+                            importance, "왜 중요할까?", term=rag_term, max_sentences=2, min_sentences=1
+                        )
+                        if importance
+                        else "",
+                        "오해 교정": albwoong_persona_rewrite_section(
+                            correction, "흔한 오해", term=rag_term, max_sentences=2, min_sentences=1
+                        )
+                        if correction
+                        else "",
+                        "예시": albwoong_persona_rewrite_section(
+                            example, "예시", term=rag_term, max_sentences=1, min_sentences=1
+                        )
+                        if example
+                        else "",
+                    }
 
-                    # 섹션별 리라이팅 (반말/간결/헤더없음)
-                    if definition:
-                        out = albwoong_persona_rewrite_section(definition, "정의", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("📖", "정의", out))
-
-                    if analogy:
-                        out = albwoong_persona_rewrite_section(analogy, "비유로 이해하기", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-                    if importance:
-                        out = albwoong_persona_rewrite_section(importance, "왜 중요할까?", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("❗", "왜 중요할까?", out))
-
-                    if correction:
-                        out = albwoong_persona_rewrite_section(correction, "흔한 오해", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("⚠️", "흔한 오해", out))
-
-                    if example:
-                        out = albwoong_persona_rewrite_section(example, "예시", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("📰", "예시", out))
-
-                    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-                    return "\n".join([p for p in parts if p])
+                    return albwoong_persona_reply(
+                        question_text,
+                        term=rag_term,
+                        context=context,
+                    )
 
         except Exception as e:
             st.warning(f"⚠️ RAG 검색 중 오류, 기본 사전 사용: {e}")
 
-    # 2) Fallback: 기본 사전
+    # 2) Fallback: 기본 사전으로 간단한 요약을 구성하여 동일 템플릿 사용
     terms = st.session_state.get("financial_terms", DEFAULT_TERMS)
     if term not in terms:
-        return f"'{term}'에 대한 정보가 아직 없어. 다른 용어를 선택해줘."
+        return albwoong_persona_reply(
+            question_text,
+            term=term,
+        )
 
     info = terms[term]
-    parts = []
-    parts.append(f"🤖 **{term}** 에 대해 설명해줄게! 🎯\n")
-
-    if info.get("정의"):
-        out = albwoong_persona_rewrite_section(info["정의"], "정의", term=term, max_sentences=2)
-        parts.append(_fmt("📖", "정의", out))
-
-    if info.get("비유"):
-        out = albwoong_persona_rewrite_section(info["비유"], "비유로 이해하기", term=term, max_sentences=2)
-        parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-    if info.get("설명"):
-        out = albwoong_persona_rewrite_section(info["설명"], "쉬운 설명", term=term, max_sentences=2)
-        parts.append(_fmt("💡", "쉬운 설명", out))
-
-    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-    return "\n".join([p for p in parts if p])
+    fallback_context = {
+        "정의": info.get("정의", ""),
+        "설명": info.get("설명", ""),
+        "비유": info.get("비유", ""),
+    }
+    return albwoong_persona_reply(
+        question_text,
+        term=term,
+        context=fallback_context,
+    )
