@@ -12,27 +12,28 @@ def init_app():
     if st.session_state.get("app_initialized", False):
         return
 
-    # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등)
+    # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등) - 빠른 작업
     with st.spinner("👤 사용자 세션 초기화 중..."):
         init_session_and_user()
 
-    # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드)
-    with st.spinner("📚 금융 용어 사전 초기화 중..."):
-        ensure_financial_terms()
-
-    # ✅ 2.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (선택적)
+    # ✅ 1.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (선택적)
+    # event_log 중심 모드에서는 실패해도 계속 진행
     if API_ENABLE:
         user_id = st.session_state.get("user_id")
+
         if user_id:
             try:
                 with st.spinner("🔗 서버 연결 중..."):
                     _ensure_backend_user(user_id, silent=True)
                     _ensure_backend_session()
             except Exception:
-                # 연결 실패해도 앱은 계속 진행
-                pass
+                pass  # 연결 실패해도 앱은 계속 진행
 
-    # ✅ 3. 세션 상태 기본값 설정
+    # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드) - 가장 무거운 작업
+    with st.spinner("📚 금융 용어 사전 초기화 중..."):
+        ensure_financial_terms()
+
+    # ✅ 3. 세션 상태 기본값 설정 (빠른 작업)
     st.session_state.setdefault("selected_article", None)
     st.session_state.setdefault("chat_history", [])
     st.session_state.setdefault("term_click_count", 0)
