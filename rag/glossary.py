@@ -660,6 +660,7 @@ def initialize_rag_system():
                     st.session_state.rag_initialized = True
                     st.session_state.rag_term_count = len(documents)
                     _cache_rag_metadata(metadatas)
+                    st.session_state["rag_explanation_cache"] = {}
 
                     if perf_enabled:
                         step_start = _perf_step(perf_enabled, perf_steps, "cache_ready", step_start)
@@ -770,6 +771,7 @@ def initialize_rag_system():
         st.session_state.rag_initialized = True
         st.session_state.rag_term_count = len(documents)
         _cache_rag_metadata(metadatas)
+        st.session_state["rag_explanation_cache"] = {}
 
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "session_update", step_start)
@@ -900,6 +902,38 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
                     correction = metadata.get("correction", "")
                     example = metadata.get("example", "")
 
+                    cache = st.session_state.setdefault("rag_explanation_cache", {})
+                    cache_key = base_term.lower()
+                    response = cache.get(cache_key)
+
+                    if response is None:
+                        parts: List[str] = []
+                        parts.append(f"🤖 **{base_term}** 에 대해 설명해줄게! 🎯\n")
+
+                        if definition:
+                            out = albwoong_persona_rewrite_section(definition, "정의", term=base_term, max_sentences=2)
+                            parts.append(_fmt("📖", "정의", out))
+
+                        if analogy:
+                            out = albwoong_persona_rewrite_section(analogy, "비유로 이해하기", term=base_term, max_sentences=2)
+                            parts.append(_fmt("🌟", "비유로 이해하기", out))
+
+                        if importance:
+                            out = albwoong_persona_rewrite_section(importance, "왜 중요할까?", term=base_term, max_sentences=2)
+                            parts.append(_fmt("❗", "왜 중요할까?", out))
+
+                        if correction:
+                            out = albwoong_persona_rewrite_section(correction, "흔한 오해", term=base_term, max_sentences=2)
+                            parts.append(_fmt("⚠️", "흔한 오해", out))
+
+                        if example:
+                            out = albwoong_persona_rewrite_section(example, "예시", term=base_term, max_sentences=2)
+                            parts.append(_fmt("📰", "예시", out))
+
+                        parts.append("더 궁금한 점 있으면 편하게 물어봐!")
+                        response = "\n".join([p for p in parts if p])
+                        cache[cache_key] = response
+
                     if return_rag_info:
                         rag_info = {
                             "search_method": "exact_match",
@@ -907,32 +941,6 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
                             "synonym_used": synonym_matched,
                             "source": "rag"
                         }
-
-                    parts: List[str] = []
-                    parts.append(f"🤖 **{base_term}** 에 대해 설명해줄게! 🎯\n")
-
-                    if definition:
-                        out = albwoong_persona_rewrite_section(definition, "정의", term=base_term, max_sentences=2)
-                        parts.append(_fmt("📖", "정의", out))
-
-                    if analogy:
-                        out = albwoong_persona_rewrite_section(analogy, "비유로 이해하기", term=base_term, max_sentences=2)
-                        parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-                    if importance:
-                        out = albwoong_persona_rewrite_section(importance, "왜 중요할까?", term=base_term, max_sentences=2)
-                        parts.append(_fmt("❗", "왜 중요할까?", out))
-
-                    if correction:
-                        out = albwoong_persona_rewrite_section(correction, "흔한 오해", term=base_term, max_sentences=2)
-                        parts.append(_fmt("⚠️", "흔한 오해", out))
-
-                    if example:
-                        out = albwoong_persona_rewrite_section(example, "예시", term=base_term, max_sentences=2)
-                        parts.append(_fmt("📰", "예시", out))
-
-                    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-                    response = "\n".join([p for p in parts if p])
 
                     if return_rag_info:
                         return response, rag_info

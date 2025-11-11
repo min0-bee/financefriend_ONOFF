@@ -92,7 +92,23 @@ def main():
 
         cache_source = st.session_state.get("rag_cache_source")
         if cache_source:
-            st.caption(f"캐시 소스: {cache_source}")
+            st.caption(f"RAG 캐시 소스: {cache_source}")
+
+        st.markdown("### 📰 뉴스 로딩 모니터")
+        news_perf = st.session_state.get("news_last_fetch_perf")
+        if news_perf:
+            st.write("마지막 로드", news_perf)
+        else:
+            st.caption("뉴스 로드 로그가 아직 없습니다.")
+
+        news_logs = st.session_state.get("news_perf_logs")
+        if news_logs:
+            with st.expander("최근 뉴스 로드 기록"):
+                st.json(news_logs)
+
+        news_source = st.session_state.get("news_cache_source")
+        if news_source:
+            st.caption(f"뉴스 데이터 소스: {news_source}")
 
     # ⑥ 하단: 내부 분석용 로그 뷰어
     st.markdown("---")

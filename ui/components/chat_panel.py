@@ -5,7 +5,7 @@ import textwrap
 import streamlit as st
 from streamlit.components.v1 import html as st_html
 from core.logger import log_event
-from rag.glossary import explain_term, search_terms_by_rag
+from rag.glossary import explain_term, search_terms_by_rag, _cache_rag_metadata
 from core.utils import llm_chat
 from persona.persona import albwoong_persona_reply
 
@@ -43,6 +43,25 @@ ALBWOONG_OPENERS = [
     "오늘도 지식 한 스푼, 알부엉과 함께 채워보자!",
     "모르는 걸 물어보는 게 진짜 지혜야. 시작해볼까?"
 ]
+
+
+def _ensure_rag_highlight_terms(collection):
+    highlight_terms = st.session_state.get("rag_terms_for_highlight")
+    metadata_map = st.session_state.get("rag_metadata_by_term")
+
+    if highlight_terms and metadata_map:
+        return highlight_terms
+
+    try:
+        all_data = collection.get()
+        if all_data and all_data.get("metadatas"):
+            _cache_rag_metadata(all_data["metadatas"])
+            return st.session_state.get("rag_terms_for_highlight", set())
+    except Exception:
+        pass
+
+    return st.session_state.get("rag_terms_for_highlight", set())
+
 
 def render(terms: dict[str, dict], use_openai: bool=False):
     st.markdown("### 💬 금융 용어 도우미")
@@ -135,16 +154,11 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                 collection = st.session_state.get("rag_collection")
                 if collection is None:
                     raise ValueError("RAG 컬렉션이 없습니다")
-                
-                all_data = collection.get()
 
-                if all_data and all_data['metadatas']:
-                    for metadata in all_data['metadatas']:
-                        rag_term = metadata.get('term', '').strip()
+                highlight_terms = _ensure_rag_highlight_terms(collection)
 
-                        if not rag_term:
-                            continue
-
+                if highlight_terms:
+                    for rag_term in sorted(highlight_terms, key=len, reverse=True):
                         boundary_pattern = (
                             r'(^|\s)' + re.escape(rag_term) + r'($|\s|[?!.,]|[은는이가을를과와로도의])'
                         )
