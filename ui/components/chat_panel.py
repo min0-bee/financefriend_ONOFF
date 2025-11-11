@@ -158,42 +158,26 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                             is_financial_question = True
                             break
 
-                    # 정확 매칭 실패 시 벡터 검색으로 유사 용어 찾기 (단, 금융 관련 키워드가 있을 때만)
+                    # 정확 매칭 실패 시 벡터 검색으로 유사 용어 찾기
                     if not matched_term:
-                        # 금융 관련 키워드 체크 (확장 가능)
-                        financial_keywords = [
-                            '금융', '투자', '주식', '금리', '환율', '배당', '채권', '은행', '예금', '적금',
-                            '대출', '이자', '경제', '시장', '주가', '코스피', '원화', '달러', '부동산',
-                            '세금', '보험', '펀드', '자산', '재무', '통화', '정책', '용어', '설명', '뭐야', '무엇'
-                        ]
+                        RAG_SIM_THRESHOLD = 0.38  # 코사인 거리(0~2, 낮을수록 유사)
 
-                        # 사용자 입력에 금융 키워드가 포함되어 있는지 확인
-                        has_financial_keyword = any(kw in user_input for kw in financial_keywords)
+                        rag_results = search_terms_by_rag(user_input, top_k=1)
 
-                        if has_financial_keyword:
-                            RAG_SIM_THRESHOLD = 0.38  # 코사인 거리(0~2, 낮을수록 유사)
-                            rag_results = search_terms_by_rag(user_input, top_k=1)
+                        if not rag_results:
+                            rag_results = search_terms_by_rag(normalized_input, top_k=1)
 
-                            if not rag_results:
-                                rag_results = search_terms_by_rag(normalized_input, top_k=1)
+                        if not rag_results:
+                            rag_results = search_terms_by_rag(cleaned_input, top_k=1)
 
-                            if not rag_results:
-                                rag_results = search_terms_by_rag(cleaned_input, top_k=1)
+                        if rag_results:
+                            candidate = rag_results[0]
+                            candidate_term = (candidate.get('term') or '').strip()
+                            distance = candidate.get('_distance')
 
-                            if rag_results:
-                                candidate = rag_results[0]
-                                candidate_term = (candidate.get('term') or '').strip()
-                                distance = candidate.get('_distance')
-
-                                if candidate_term:
-                                    # distance가 None이면 임시로 허용, 값이 있으면 임계값 비교
-                                    if distance is None or distance <= RAG_SIM_THRESHOLD:
-                                        matched_term = candidate_term
-                                        is_financial_question = True
-                                    else:
-                                        # 거리가 높으면 금융 질문이 아니라고 판단
-                                        matched_term = None
-                                        is_financial_question = False
+                            if candidate_term and (distance is None or distance <= RAG_SIM_THRESHOLD):
+                                matched_term = candidate_term
+                                is_financial_question = True
 
                     if matched_term:
                         # RAG에서 찾은 용어로 설명 생성 (RAG 정보 포함)
