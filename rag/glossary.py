@@ -2,91 +2,20 @@
 ═══════════════════════════════════════════════════════════════════════
 📚 금융 용어 사전 모듈 (RAG 시스템 통합)
 ═══════════════════════════════════════════════════════════════════════
-
-## 📌 주요 변경 사항
-
-### 1️⃣ 기존 시스템 (주석처리됨)
-   - DEFAULT_TERMS 하드코딩 사전 (5개 용어)
-   - 정적 용어 검색만 가능
-
-### 2️⃣ 신규 RAG 시스템
-   - CSV 기반 240+ 금융용어 로드
-   - 벡터 데이터베이스 (ChromaDB) 연동
-   - 의미 기반 유사도 검색 지원
-   - 한국어 임베딩 모델 (jhgan/ko-sroberta-multitask)
-
-## 🔧 필수 라이브러리 설치
-```bash
-pip install chromadb sentence-transformers pandas
-```
-
-## 📂 파일 구조
-```
-rag/
-├── glossary.py (현재 파일)
-└── glossary/
-    └── 금융용어사전.csv (240+ 용어)
-```
-
-## 🚀 사용 방법
-
-### 초기화 (자동)
-```python
-from rag.glossary import ensure_financial_terms
-
-# 앱 시작 시 자동으로 RAG 초기화
-ensure_financial_terms()
-```
-
-### 용어 설명
-```python
-from rag.glossary import explain_term
-
-# RAG 벡터 검색으로 유사 용어 자동 매칭
-explanation = explain_term("양적완화")
-print(explanation)
-```
-
-### 본문 하이라이트
-```python
-from rag.glossary import highlight_terms
-
-text = "한국은행이 기준금리를 인상했다"
-highlighted = highlight_terms(text)
-# 결과: 한국은행이 <mark>기준금리</mark>를 인상했다
-```
-
-### 벡터 검색 (고급)
-```python
-from rag.glossary import search_terms_by_rag
-
-# 자연어 질문으로 관련 용어 찾기
-results = search_terms_by_rag("중앙은행이 돈을 푸는 정책", top_k=3)
-# 결과: [{'term': '양적완화', ...}, {'term': '기준금리', ...}, ...]
-```
-
-## 🔄 Fallback 메커니즘
-- RAG 초기화 실패 시 자동으로 DEFAULT_TERMS 사전 사용
-- CSV 파일 없어도 기본 5개 용어로 동작 보장
-
-## 📊 CSV 파일 형식
-- 컬럼: 금융용어, 유의어, 정의, 비유, 왜 중요?, 오해 교정, 예시, 단어 난이도
-- 인코딩: UTF-8
-═══════════════════════════════════════════════════════════════════════
 """
 
 import re
 import streamlit as st
-
-# ═════════════════════════════════════════════════════════════
-# 🆕 RAG 시스템 추가: CSV 기반 금융용어 벡터 검색
-# - ChromaDB: 벡터 데이터베이스로 유사도 검색 지원
-# - SentenceTransformer: 한국어 임베딩 모델
-# - pandas: CSV 파일 로드
-# ═════════════════════════════════════════════════════════════
+import pickle
+import hashlib
+import json
+import gzip
 import os
 import pandas as pd
 from typing import Dict, List, Optional
+from financefriend_ONOFF.persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
+from core.logger import get_supabase_client
+from core.config import SUPABASE_ENABLE
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
@@ -102,6 +31,12 @@ from core.config import SUPABASE_ENABLE
 # - 모든 세션에서 동일한 모델 인스턴스 재사용
 # ─────────────────────────────────────────────────────────────
 _embedding_model_cache = None
+
+# ─────────────────────────────────────────────────────────────
+# 🚀 전역 캐시: 임베딩 모델 (세션 간 재사용)
+# ─────────────────────────────────────────────────────────────
+_embedding_model_cache = None
+_RAG_AVAILABLE = chromadb is not None and SentenceTransformer is not None
 
 # ─────────────────────────────────────────────────────────────
 # ✅ 기본 금융 용어 사전 (RAG/사전 없이도 동작하는 최소 세트)
@@ -138,7 +73,7 @@ DEFAULT_TERMS = {
 
 # ─────────────────────────────────────────────────────────────
 # 🧰 세션에 금융 용어 사전 보장 (RAG 통합 버전)
-# - 변경 사항:
+#   - 변경 사항:
 #   1. 기존: DEFAULT_TERMS만 복사
 #   2. 신규: RAG 시스템 자동 초기화 추가
 #   3. Fallback: RAG 실패 시 기존 DEFAULT_TERMS 사용
@@ -157,7 +92,11 @@ def ensure_financial_terms():
 
     # 2️⃣ RAG 시스템 자동 초기화 (최초 1회만)
     if "rag_initialized" not in st.session_state:
-        initialize_rag_system()
+        if not _RAG_AVAILABLE:
+            st.session_state.rag_initialized = False
+            st.warning("⚠️ 고급 용어 검색 모듈이 설치되지 않아 기본 사전을 사용합니다.")
+        else:
+            initialize_rag_system()
 
 # ─────────────────────────────────────────────────────────────
 # 🔴 기존 함수 (주석처리): 하드코딩된 사전 기반 하이라이트
@@ -280,38 +219,11 @@ def highlight_terms(text: str) -> str:
 
     return highlighted
 
-# ─────────────────────────────────────────────────────────────
-# 🦉 챗봇 응답용: 용어 설명 생성
-# - 사전에 없으면 안내 문구 반환
-# - 있으면 '정의/설명/비유'를 포맷팅하여 마크다운으로 반환
-# - chat_history는 맥락 강화용 파라미터(현재는 미사용)
-# ─────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────
-# 🔴 기존 함수 (주석처리): 하드코딩된 사전 기반 설명
-# - RAG 시스템 도입 전 최소 세트 기반 동작 방식
-# ─────────────────────────────────────────────────────────────
-# def explain_term(term: str, chat_history):
-#     terms = st.session_state.financial_terms
-#
-#     # 존재하지 않는 용어 처리
-#     if term not in terms:
-#         return f"'{term}'에 대한 정보가 금융 사전에 없습니다. 다른 용어를 선택해주세요."
-#
-#     info = terms[term]
-#
-#     # 마크다운 포맷으로 친절한 설명 구성
-#     return (
-#         f"**{term}** 에 대해 설명해드릴게요! 🎯\n\n"
-#         f"📖 **정의**\n{info['정의']}\n\n"
-#         f"💡 **쉬운 설명**\n{info['설명']}\n\n"
-#         f"🌟 **비유로 이해하기**\n{info['비유']}\n\n"
-#         f"더 궁금한 점이 있으시면 언제든지 물어보세요!"
-#     )
+def _fmt(header_icon: str, header_text: str, body_md: str) -> str:
+    if not body_md or not body_md.strip():
+        return ""
+    return f"{header_icon} **{header_text}**\n\n{body_md}\n"
 
-
-# ═════════════════════════════════════════════════════════════
-# 🆕 RAG 시스템 핵심 기능
-# ═════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────
 # 📁 CSV 파일에서 금융용어 로드
@@ -374,6 +286,7 @@ def _get_cache_dir():
 
 def _get_embeddings_cache_path():
     """임베딩 벡터 캐시 파일 경로"""
+
     return os.path.join(_get_cache_dir(), "embeddings.pkl")
 
 
@@ -403,6 +316,7 @@ def _save_embeddings_cache(documents: List[str], embeddings, metadatas: List[Dic
                 'metadatas': metadatas,
                 'ids': ids
             }, f)
+
         
         # 체크섬 저장
         with open(_get_checksum_cache_path(), 'w', encoding='utf-8') as f:
@@ -429,6 +343,7 @@ def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
                 return None  # CSV 파일이 변경됨
         
         # 임베딩 벡터 로드
+
         embeddings_path = _get_embeddings_cache_path()
         if not os.path.exists(embeddings_path):
             return None
@@ -462,7 +377,7 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
             'ids': ids
         }
         
-        # 2. pickle로 직렬화
+
         pickled_data = pickle.dumps(cache_data)
         
         # 3. Storage 버킷과 경로 설정
@@ -481,6 +396,7 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
             storage_path,
             pickled_data,
             file_options={"content-type": "application/octet-stream", "upsert": "true"}
+
         )
         
         # 5. 메타데이터를 테이블에 저장 (glossary_embeddings 테이블)
@@ -518,6 +434,7 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
         # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         bucket_name = "glossary-cache"
         storage_path = f"embeddings/{checksum}.pkl"
+
         
         try:
             # 메타데이터 확인 (있으면 체크섬 검증)
@@ -526,10 +443,12 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
                 # 메타데이터가 있으면 해당 경로 사용
                 metadata = result.data[0]
                 storage_path = metadata.get("storage_path", storage_path)
+
         except:
             # 테이블이 없어도 Storage에서 직접 확인
             pass
         
+
         # 2. Storage에서 다운로드
         response = supabase.storage.from_(bucket_name).download(storage_path)
         
@@ -538,6 +457,7 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
         
         # 3. pickle로 역직렬화
         return pickle.loads(response)
+
     
     except Exception as e:
         # 파일이 없거나 에러 발생 시 None 반환 (조용히 실패)
@@ -833,95 +753,97 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
         return_rag_info=False: 마크다운 형식의 용어 설명 문자열
         return_rag_info=True: (마크다운 형식의 용어 설명, RAG 메타데이터 또는 None) 튜플
     """
-    rag_info = None
 
-    # 1️⃣ RAG 시스템이 초기화되어 있으면 정확한 용어 매칭 시도
+    rag_info: Optional[Dict] = None
+
     if st.session_state.get("rag_initialized", False):
         try:
-            collection = st.session_state.rag_collection
+            collection = st.session_state.get("rag_collection")
+            if collection is None:
+                raise ValueError("RAG 컬렉션이 없습니다")
+
             all_data = collection.get()
+            if all_data and all_data["metadatas"]:
+                for metadata in all_data["metadatas"]:
+                    rag_term = (metadata.get("term") or "").strip()
+                    synonym = (metadata.get("synonym") or "").strip()
 
-            if all_data and all_data['metadatas']:
-                # 정확한 용어 매칭 (대소문자 무시, 완전 일치)
-                for metadata in all_data['metadatas']:
-                    rag_term = metadata.get('term', '').strip()
-                    synonym = metadata.get('synonym', '').strip()
+                    if rag_term.lower() != term.lower() and (not synonym or synonym.lower() != term.lower()):
+                        continue
 
-                    # 용어 또는 유의어가 정확히 일치하는지 확인
-                    if (rag_term.lower() == term.lower() or
-                        (synonym and synonym.lower() == term.lower())):
-                        
-                        # 매칭된 용어 정보로 설명 생성
-                        term_name = rag_term
-                        definition = metadata.get("definition", "")
-                        analogy = metadata.get("analogy", "")
-                        importance = metadata.get("importance", "")
-                        correction = metadata.get("correction", "")
-                        example = metadata.get("example", "")
+                    definition = metadata.get("definition", "")
+                    analogy = metadata.get("analogy", "")
+                    importance = metadata.get("importance", "")
+                    correction = metadata.get("correction", "")
+                    example = metadata.get("example", "")
 
-                        # RAG 정보 저장 (return_rag_info=True일 때 사용)
-                        if return_rag_info:
-                            rag_info = {
-                                "term": term_name,
-                                "synonym": synonym,
-                                "definition": definition,
-                                "analogy": analogy,
-                                "importance": importance,
-                                "correction": correction,
-                                "example": example,
-                                "source": "rag"
-                            }
+                    if return_rag_info:
+                        rag_info = {
+                            "search_method": "exact_match",
+                            "matched_term": rag_term,
+                            "synonym_used": synonym.lower() == term.lower() if synonym else False,
+                            "source": "rag"
+                        }
 
-                        # 마크다운 포맷으로 친절한 설명 구성
-                        response = f"**{term_name}** 에 대해 설명해드릴게요! 🎯\n\n"
+                    parts: List[str] = []
+                    parts.append(f"🤖 **{rag_term}** 에 대해 설명해줄게! 🎯\n")
 
-                        if synonym:
-                            response += f"💡 **유의어**: {synonym}\n\n"
+                    if definition:
+                        out = albwoong_persona_rewrite_section(definition, "정의", term=rag_term, max_sentences=2)
+                        parts.append(_fmt("📖", "정의", out))
 
-                        if definition:
-                            response += f"📖 **정의**\n{definition}\n\n"
+                    if analogy:
+                        out = albwoong_persona_rewrite_section(analogy, "비유로 이해하기", term=rag_term, max_sentences=2)
+                        parts.append(_fmt("🌟", "비유로 이해하기", out))
 
-                        if analogy:
-                            response += f"🌟 **비유로 이해하기**\n{analogy}\n\n"
+                    if importance:
+                        out = albwoong_persona_rewrite_section(importance, "왜 중요할까?", term=rag_term, max_sentences=2)
+                        parts.append(_fmt("❗", "왜 중요할까?", out))
 
-                        if importance:
-                            response += f"❗ **왜 중요할까요?**\n{importance}\n\n"
+                    if correction:
+                        out = albwoong_persona_rewrite_section(correction, "흔한 오해", term=rag_term, max_sentences=2)
+                        parts.append(_fmt("⚠️", "흔한 오해", out))
 
-                        if correction:
-                            response += f"⚠️ **흔한 오해**\n{correction}\n\n"
+                    if example:
+                        out = albwoong_persona_rewrite_section(example, "예시", term=rag_term, max_sentences=2)
+                        parts.append(_fmt("📰", "예시", out))
 
-                        if example:
-                            response += f"📰 **예시**\n{example}\n\n"
+                    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
+                    response = "\n".join([p for p in parts if p])
 
-                        response += "더 궁금한 점이 있으시면 언제든지 물어보세요!"
-
-                        if return_rag_info:
-                            return response, rag_info
-                        return response
-
+                    if return_rag_info:
+                        return response, rag_info
+                    return response
         except Exception as e:
-            st.warning(f"⚠️ RAG 검색 중 오류 발생, 기본 사전을 사용합니다: {e}")
+            st.warning(f"⚠️ RAG 검색 중 오류, 기본 사전 사용: {e}")
 
-    # 2️⃣ Fallback: 기존 하드코딩된 사전 사용
     terms = st.session_state.get("financial_terms", DEFAULT_TERMS)
 
     if term not in terms:
-        explanation = f"'{term}'에 대한 정보가 금융 사전에 없습니다. 다른 용어를 선택해주세요."
+        message = f"'{term}'에 대한 정보가 아직 없어. 다른 용어를 선택해줘."
         if return_rag_info:
-            return explanation, None
-        return explanation
+            return message, None
+        return message
 
     info = terms[term]
+    parts: List[str] = []
+    parts.append(f"🤖 **{term}** 에 대해 설명해줄게! 🎯\n")
 
-    # 마크다운 포맷으로 친절한 설명 구성
-    explanation = (
-        f"**{term}** 에 대해 설명해드릴게요! 🎯\n\n"
-        f"📖 **정의**\n{info['정의']}\n\n"
-        f"💡 **쉬운 설명**\n{info['설명']}\n\n"
-        f"🌟 **비유로 이해하기**\n{info['비유']}\n\n"
-        f"더 궁금한 점이 있으시면 언제든지 물어보세요!"
-    )
-    
+    if info.get("정의"):
+        out = albwoong_persona_rewrite_section(info["정의"], "정의", term=term, max_sentences=2)
+        parts.append(_fmt("📖", "정의", out))
+
+    if info.get("비유"):
+        out = albwoong_persona_rewrite_section(info["비유"], "비유로 이해하기", term=term, max_sentences=2)
+        parts.append(_fmt("🌟", "비유로 이해하기", out))
+
+    if info.get("설명"):
+        out = albwoong_persona_rewrite_section(info["설명"], "쉬운 설명", term=term, max_sentences=2)
+        parts.append(_fmt("💡", "쉬운 설명", out))
+
+    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
+    response = "\n".join([p for p in parts if p])
+
     if return_rag_info:
-        return explanation, None
-    return explanation
+        return response, None
+    return response

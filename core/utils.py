@@ -4,9 +4,9 @@ import json
 import uuid
 import pandas as pd
 from datetime import datetime, timezone
-from core.config import LOG_DIR, LOG_FILE
+from financefriend_ONOFF.core.config import LOG_DIR, LOG_FILE
 from openai import OpenAI
-from core.logger import CSV_HEADER
+from financefriend_ONOFF.core.logger import CSV_HEADER
 
 # ─────────────────────────────────────────────────────────────
 # 🕓 (1) 현재 UTC 시각을 ISO 형식 문자열로 반환
@@ -184,7 +184,7 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
     # ✅ 1. 설정값 가져오기
     #   - 기본 모델명 (예: "gpt-4o-mini")
     #   - OpenAI API 키
-    from core.config import DEFAULT_OPENAI_MODEL, OPENAI_API_KEY
+    from financefriend_ONOFF.core.config import DEFAULT_OPENAI_MODEL, OPENAI_API_KEY
 
     # ✅ 2. OpenAI 클라이언트 초기화
     client = get_openai_client(OPENAI_API_KEY)
