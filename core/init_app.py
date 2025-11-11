@@ -48,7 +48,7 @@ def init_app():
     # ✅ 4. 뉴스 데이터 수집 (처음 실행 시만)
     if not st.session_state.news_articles:
         with st.spinner("📰 최신 뉴스를 수집하는 중..."):
-            st.session_state.news_articles = collect_news()
+            st.session_state.news_articles = collect_news() or []
 
     # ✅ 5. 세션 시작 이벤트 로그 (한 세션에 한 번만 기록)
     if not st.session_state.get("session_logged"):
