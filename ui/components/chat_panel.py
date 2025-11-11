@@ -23,6 +23,8 @@ def render(terms: dict[str, dict], use_openai: bool=False):
     # 입력창
     user_input = st.chat_input("궁금한 금융 용어를 입력하세요...")
     if user_input:
+
+        cleaned_input = re.sub(r"\s+", "", user_input.strip())
         t0 = time.time()
         log_event("chat_question", message=user_input, source="chat", surface="sidebar")
         st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -50,7 +52,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                         # \b는 단어 경계를 의미하지만 한글에는 적용 안됨
                         # 대신 공백이나 문장 시작/끝에서 매칭되는지 확인
                         pattern_term = r'(^|\s)' + re.escape(rag_term) + r'($|\s|[?!.,])'
-                        if re.search(pattern_term, user_input, re.IGNORECASE):
+                        if re.search(pattern_term, cleaned_input, re.IGNORECASE):
                             matched_term = rag_term
                             is_financial_question = True
                             break
@@ -68,7 +70,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                         has_financial_keyword = any(kw in user_input for kw in financial_keywords)
 
                         if has_financial_keyword:
-                            rag_results = search_terms_by_rag(user_input, top_k=1)
+                            rag_results = search_terms_by_rag(cleaned_input, top_k=1)
                             if rag_results and len(rag_results) > 0:
                                 # 유사도가 충분히 높은 경우만 매칭 (거리 확인)
                                 matched_term = rag_results[0].get('term', '')
@@ -97,7 +99,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
             # 단어 경계를 고려한 정확한 매칭
             for term_key in terms.keys():
                 pattern = r'(^|\s)' + re.escape(term_key) + r'($|\s|[?!.,])'
-                if re.search(pattern, user_input, re.IGNORECASE):
+                if re.search(pattern, cleaned_input, re.IGNORECASE):
                     explanation, rag_info = explain_term(term_key, st.session_state.chat_history, return_rag_info=True)
                     is_financial_question = True
                     log_event(

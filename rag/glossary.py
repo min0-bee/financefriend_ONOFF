@@ -487,6 +487,11 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
               "source": "rag" 또는 "default_terms"
           }
     """
+    rag_info = {
+        "search_method": None,
+        "matched_term": None,
+        "source": None
+    }
 
     # 1️⃣ RAG 시스템이 초기화되어 있으면 정확한 용어 매칭 시도
     if st.session_state.get("rag_initialized", False):
@@ -547,6 +552,7 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
 
         except Exception as e:
             st.warning(f"⚠️ RAG 검색 중 오류 발생, 기본 사전을 사용합니다: {e}")
+            rag_info["source"] = "fallback"  # 예외 발생 시에도 rag_info 기본값 유지
 
     # 2️⃣ Fallback: 기존 하드코딩된 사전 사용
     terms = st.session_state.get("financial_terms", DEFAULT_TERMS)
@@ -555,6 +561,7 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
         error_msg = f"'{term}'에 대한 정보가 금융 사전에 없습니다. 다른 용어를 선택해주세요."
         if return_rag_info:
             rag_info["error"] = "term_not_found"
+            rag_info["source"] = "default_terms"
             return error_msg, rag_info
         return error_msg
 
