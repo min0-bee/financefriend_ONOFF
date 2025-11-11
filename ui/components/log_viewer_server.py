@@ -17,8 +17,19 @@ px = None
 try:
     if importlib.util.find_spec("plotly.express"):
         px = importlib.import_module("plotly.express")
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except Exception:
+            go = None
+            make_subplots = None
+    else:
+        go = None
+        make_subplots = None
 except Exception:
     px = None
+    go = None
+    make_subplots = None
 import json
 
 # requests 라이브러리
@@ -491,6 +502,67 @@ def _to_kst(series):
     return dt.dt.tz_convert("Asia/Seoul")
 
 
+def _fill_sessions_from_time(
+    df: pd.DataFrame,
+    *,
+    threshold_minutes: int = 30,
+    time_column: str = "event_time",
+    user_column: str = "user_id",
+) -> pd.DataFrame:
+    """
+    event_time 기반으로 세션 ID를 추산합니다.
+    세션 간 간격 임계값(threshold_minutes)보다 큰 경우 새로운 세션으로 간주합니다.
+    """
+    if df.empty or time_column not in df.columns:
+        result = df.copy()
+        if "session_id" in result.columns:
+            result["session_id_resolved"] = result["session_id"]
+        return result
+
+    work = df.copy()
+    work[time_column] = pd.to_datetime(work[time_column], errors="coerce")
+
+    # 세션 분리를 위한 사용자 구분 값 준비
+    has_user_column = user_column in work.columns
+    if has_user_column:
+        session_users = work[user_column].fillna("anonymous").astype(str)
+        session_users = session_users.where(session_users.str.len() > 0, "anonymous")
+    else:
+        session_users = pd.Series(["anonymous"] * len(work), index=work.index)
+
+    threshold = pd.Timedelta(minutes=threshold_minutes)
+    order = work.index.to_series(name="_session_order")
+    work = work.assign(_session_user=session_users, _session_order=order)
+    work = work.sort_values(["_session_user", time_column, "_session_order"])
+
+    gaps = work.groupby("_session_user")[time_column].diff()
+    new_session_flags = gaps.isna() | (gaps > threshold) | work[time_column].isna()
+    session_sequence = new_session_flags.astype(int).groupby(work["_session_user"]).cumsum()
+
+    inferred_ids = work["_session_user"].astype(str) + "-" + session_sequence.astype(str)
+    work["session_id_inferred"] = inferred_ids
+
+    resolved = work.sort_values("_session_order")["session_id_inferred"]
+    result = df.copy()
+    result["session_id_inferred"] = resolved
+
+    if "session_id" in result.columns:
+        # 빈 문자열 또는 NaN을 차례대로 채우기
+        session_series = result["session_id"]
+        session_series = session_series.where(session_series.notna(), None)
+        if session_series.dtype != object:
+            session_series = session_series.astype("object")
+        missing_mask = session_series.isna() | (session_series.astype(str).str.len() == 0)
+        session_series = session_series.astype("object")
+        session_series.loc[missing_mask] = result.loc[missing_mask, "session_id_inferred"]
+        result["session_id"] = session_series
+    else:
+        result["session_id"] = result["session_id_inferred"]
+
+    result["session_id_resolved"] = result["session_id"]
+    return result
+
+
 def render():
     """
     서버에서 데이터를 가져와서 로그 뷰어 렌더링
@@ -540,6 +612,18 @@ def render():
             with col_event:
                 event_types = ["전체"] + sorted(df["event_name"].dropna().unique().tolist())
                 selected_event_type = st.selectbox("🏷️ 이벤트 타입 필터", event_types)
+            session_gap_minutes = st.slider(
+                "세션 간 최대 허용 공백 (분)",
+                min_value=5,
+                max_value=240,
+                step=5,
+                value=st.session_state.get("log_viewer_session_gap_supabase", 30),
+                help="이 값보다 긴 시간 간격이 발생하면 새로운 세션으로 간주합니다."
+            )
+            st.session_state["log_viewer_session_gap_supabase"] = session_gap_minutes
+
+        df = _fill_sessions_from_time(df, threshold_minutes=session_gap_minutes)
+        session_column = "session_id_resolved" if "session_id_resolved" in df.columns else "session_id"
 
         df_view = df.copy()
         if selected_user != "전체":
@@ -550,8 +634,9 @@ def render():
         if selected_event_type != "전체":
             df_view = df_view[df_view["event_name"] == selected_event_type]
 
+        session_count = df_view[session_column].nunique() if session_column in df_view.columns else 0
         st.caption(
-            f"필터 결과: {len(df_view):,}건 / 사용자 {df_view['user_id'].nunique()}명 / 이벤트 종류 {df_view['event_name'].nunique()}개"
+            f"필터 결과: {len(df_view):,}건 / 세션 {session_count:,}개 / 사용자 {df_view['user_id'].nunique()}명 / 이벤트 종류 {df_view['event_name'].nunique()}개"
         )
 
         colA, colB, colC = st.columns(3)
@@ -610,6 +695,70 @@ def render():
             )
         else:
             st.caption("⚠️ plotly 미설치 또는 데이터 부족으로 파이 차트를 표시할 수 없습니다.")
+
+        st.markdown("### 🕒 세션 분석 (MVP)")
+        if session_column in df_view.columns:
+            sessions_summary = (
+                df_view.dropna(subset=[session_column])
+                      .groupby(session_column)
+                      .agg(
+                          사용자=("user_id", lambda x: next((u for u in x if isinstance(u, str) and u), "")),
+                          첫_이벤트=("event_time", "min"),
+                          마지막_이벤트=("event_time", "max"),
+                          이벤트_수=("event_name", "count"),
+                          이벤트_종류수=("event_name", "nunique"),
+                      )
+                      .reset_index()
+            )
+            if not sessions_summary.empty:
+                durations = (sessions_summary["마지막_이벤트"] - sessions_summary["첫_이벤트"]).dt.total_seconds() / 60.0
+                sessions_summary["세션_지속시간(분)"] = durations.fillna(0).round(1)
+                st.dataframe(sessions_summary.head(50), use_container_width=True, height=320)
+
+                duration_bins = [0, 5, 15, 30, 60, 120, 240, 480, float("inf")]
+                duration_labels = ["0-5", "5-15", "15-30", "30-60", "60-120", "120-240", "240-480", "480+"]
+                duration_hist = pd.Series(pd.cut(sessions_summary["세션_지속시간(분)"], bins=duration_bins, labels=duration_labels, right=False))
+                duration_counts = duration_hist.value_counts().sort_index().rename_axis("지속시간 구간").reset_index(name="세션 수")
+                if go is not None and make_subplots is not None and not duration_counts.empty:
+                    total_sessions = duration_counts["세션 수"].sum()
+                    duration_counts["누적 세션 수"] = duration_counts["세션 수"].cumsum()
+                    duration_counts["누적 비율"] = (
+                        duration_counts["누적 세션 수"] / total_sessions if total_sessions else 0
+                    )
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig.add_bar(
+                        x=duration_counts["지속시간 구간"],
+                        y=duration_counts["세션 수"],
+                        name="세션 수",
+                        marker_color="#1f77b4",
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=duration_counts["지속시간 구간"],
+                            y=duration_counts["누적 비율"],
+                            name="누적 비율",
+                            mode="lines+markers",
+                            marker=dict(color="#ff7f0e"),
+                        ),
+                        secondary_y=True,
+                    )
+                    fig.update_yaxes(title_text="세션 수", secondary_y=False)
+                    fig.update_yaxes(title_text="누적 비율", secondary_y=True, tickformat=".0%")
+                    fig.update_layout(
+                        title="세션 지속시간 분포",
+                        hovermode="x unified",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.bar_chart(duration_counts.set_index("지속시간 구간"))
+
+                top_sessions = sessions_summary.sort_values("이벤트_수", ascending=False).head(15)
+                st.bar_chart(top_sessions.set_index(session_column)["이벤트_수"])
+            else:
+                st.caption("세션 정보를 계산할 수 없습니다.")
+        else:
+            st.caption("세션 식별자를 계산하지 못했습니다.")
 
         st.markdown("### 🏷️ 용어 클릭/응답 통계")
         term_clicks = df_view[df_view["event_name"].isin(["glossary_click", "glossary_answer"])].copy()
@@ -789,6 +938,17 @@ def render():
             "👤 유저 기준 집계",
             help="유저별로 데이터를 집계하여 표시합니다"
         )
+
+    session_gap_minutes_api = st.slider(
+        "세션 간 최대 허용 공백 (분)",
+        min_value=5,
+        max_value=240,
+        step=5,
+        value=st.session_state.get("log_viewer_session_gap_api", 30),
+        help="이 값보다 긴 시간 간격이 발생하면 새로운 세션으로 간주합니다.",
+        key="log_viewer_session_gap_api_slider"
+    )
+    st.session_state["log_viewer_session_gap_api"] = session_gap_minutes_api
     
     # 기간 필터 적용
     time_cutoff = None
@@ -866,6 +1026,73 @@ def render():
                 df = df.sort_values("event_time", ascending=False)
         else:
             df = session_start_df
+    
+    df = _fill_sessions_from_time(df, threshold_minutes=session_gap_minutes_api)
+    session_column = "session_id_resolved" if "session_id_resolved" in df.columns else "session_id"
+
+    st.markdown("### 🕒 세션 분석 (MVP)")
+    if session_column in df.columns:
+        api_sessions_summary = (
+            df.dropna(subset=[session_column])
+              .groupby(session_column)
+              .agg(
+                  사용자=("user_id", lambda x: next((u for u in x if isinstance(u, str) and u), "")),
+                  첫_이벤트=("event_time", "min"),
+                  마지막_이벤트=("event_time", "max"),
+                  이벤트_수=("event_name", "count"),
+                  이벤트_종류수=("event_name", "nunique"),
+              )
+              .reset_index()
+        )
+        if not api_sessions_summary.empty:
+            durations = (api_sessions_summary["마지막_이벤트"] - api_sessions_summary["첫_이벤트"]).dt.total_seconds() / 60.0
+            api_sessions_summary["세션_지속시간(분)"] = durations.fillna(0).round(1)
+            st.dataframe(api_sessions_summary.head(50), use_container_width=True, height=320)
+
+            duration_bins = [0, 5, 15, 30, 60, 120, 240, 480, float("inf")]
+            duration_labels = ["0-5", "5-15", "15-30", "30-60", "60-120", "120-240", "240-480", "480+"]
+            duration_hist = pd.Series(pd.cut(api_sessions_summary["세션_지속시간(분)"], bins=duration_bins, labels=duration_labels, right=False))
+            duration_counts = duration_hist.value_counts().sort_index().rename_axis("지속시간 구간").reset_index(name="세션 수")
+            if go is not None and make_subplots is not None and not duration_counts.empty:
+                total_sessions = duration_counts["세션 수"].sum()
+                duration_counts["누적 세션 수"] = duration_counts["세션 수"].cumsum()
+                duration_counts["누적 비율"] = (
+                    duration_counts["누적 세션 수"] / total_sessions if total_sessions else 0
+                )
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                fig.add_bar(
+                    x=duration_counts["지속시간 구간"],
+                    y=duration_counts["세션 수"],
+                    name="세션 수",
+                    marker_color="#1f77b4",
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=duration_counts["지속시간 구간"],
+                        y=duration_counts["누적 비율"],
+                        name="누적 비율",
+                        mode="lines+markers",
+                        marker=dict(color="#ff7f0e"),
+                    ),
+                    secondary_y=True,
+                )
+                fig.update_yaxes(title_text="세션 수", secondary_y=False)
+                fig.update_yaxes(title_text="누적 비율", secondary_y=True, tickformat=".0%")
+                fig.update_layout(
+                    title="세션 지속시간 분포",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.bar_chart(duration_counts.set_index("지속시간 구간"))
+
+            top_sessions = api_sessions_summary.sort_values("이벤트_수", ascending=False).head(15)
+            st.bar_chart(top_sessions.set_index(session_column)["이벤트_수"])
+        else:
+            st.caption("세션 정보를 계산할 수 없습니다.")
+    else:
+        st.caption("세션 식별자를 계산하지 못했습니다.")
     
     # 유저 기준 집계 모드
     if aggregate_by_user:
@@ -1103,10 +1330,11 @@ def render():
         else:
             # 기간 필터 적용된 이벤트 수 표시
             filtered_count = len(df)
+            session_count = df[session_column].nunique() if session_column in df.columns else 0
             if time_cutoff:
-                st.caption(f"총 {filtered_count}개의 이벤트 (기간 필터: {time_filter})")
+                st.caption(f"총 {filtered_count}개의 이벤트 / 세션 {session_count:,}개 (기간 필터: {time_filter})")
             else:
-                st.caption(f"총 {filtered_count}개의 이벤트 (뉴스 상호작용 + 대화 통합)")
+                st.caption(f"총 {filtered_count}개의 이벤트 / 세션 {session_count:,}개 (뉴스 상호작용 + 대화 통합)")
             
             # 이벤트 스키마에 맞는 컬럼 표시
             schema_columns = ["event_time", "event_name", "user_id", "session_id", "surface", "source", 
