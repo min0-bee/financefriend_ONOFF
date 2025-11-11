@@ -43,23 +43,55 @@ CSS = """
     line-height: 1.8;              /* 줄 간격 넉넉하게 */
 }
 
-/* 💬 챗봇 메시지 공통 스타일 */
-.chat-message {
-    padding: 10px;
-    border-radius: 10px;
-    margin: 5px 0;                 /* 메시지 간격 */
+/* 💬 챗봇 메시지 컨테이너 */
+.chat-message-container {
+    padding-right: 4px;
 }
 
-/* 👤 유저 메시지 (오른쪽 정렬 + 파란색 톤) */
-.user-message {
-    background: #e3f2fd;           /* 밝은 파란색 배경 */
-    text-align: right;             /* 오른쪽 정렬 */
+.chat-row {
+    display: flex;
+    gap: 12px;
+    margin: 8px 0;
+    align-items: flex-end;
 }
 
-/* 🦉 챗봇 메시지 (왼쪽 정렬 + 회색 톤) */
-.bot-message {
-    background: #f5f5f5;           /* 밝은 회색 배경 */
+.chat-row--assistant {
+    flex-direction: row;
 }
+
+.chat-row--user {
+    justify-content: flex-end;
+}
+
+.chat-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #eef2ff;
+    border: 1px solid #d9e1ff;
+    flex-shrink: 0;
+}
+
+.chat-bubble {
+    padding: 12px 16px;
+    border-radius: 16px;
+    max-width: calc(100% - 52px);
+    font-size: 0.95rem;
+    line-height: 1.6;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+.chat-bubble--assistant {
+    background: #f5f5f5;
+    border-top-left-radius: 6px;
+}
+
+.chat-bubble--user {
+    background: #e3f2fd;
+    border-top-right-radius: 6px;
+    text-align: right;
+}
+
 
 /* 🟨 금융 용어 하이라이트 (기사 본문에서 하이라이트되는 단어) */
 .financial-term {

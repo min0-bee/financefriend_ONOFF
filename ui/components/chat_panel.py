@@ -1,6 +1,8 @@
 
 import re
-import time, streamlit as st
+import time
+import textwrap
+import streamlit as st
 from streamlit.components.v1 import html as st_html
 from core.logger import log_event
 from rag.glossary import explain_term, search_terms_by_rag
@@ -67,8 +69,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
     messages_html = []
     for message in st.session_state.chat_history:
         role = message["role"]
-        css = "user-message" if role == "user" else "bot-message"
-        icon = "👤" if role == "user" else "🤖"
+        role_class = "user" if role == "user" else "assistant"
         content_html = (
             message["content"]
             .replace("&", "&amp;")
@@ -76,7 +77,22 @@ def render(terms: dict[str, dict], use_openai: bool=False):
             .replace(">", "&gt;")
             .replace("\n", "<br>")
         )
-        messages_html.append(f'<div class="chat-message {css}">{icon} {content_html}</div>')
+        avatar_html = ""
+        if role_class == "assistant":
+            avatar_html = '<div class="chat-avatar chat-avatar--assistant"></div>'
+
+        messages_html.append(
+            textwrap.dedent(
+                f"""
+                <div class="chat-row chat-row--{role_class}">
+                  {avatar_html}
+                  <div class="chat-bubble chat-bubble--{role_class}">
+                    {content_html}
+                  </div>
+                </div>
+                """
+            ).strip()
+        )
 
     chat_html = (
         "<div id='chat-scroll-box' class='chat-message-container' "
