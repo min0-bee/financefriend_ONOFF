@@ -13,7 +13,7 @@ import gzip
 import os
 import pandas as pd
 from typing import Dict, List, Optional
-from financefriend_ONOFF.persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
+from persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 import chromadb

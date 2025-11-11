@@ -2,8 +2,8 @@ import os
 import json
 import uuid
 import streamlit as st
-from financefriend_ONOFF.core.config import USER_FILE     # 로컬에 저장될 user_info.json 파일 경로
-from financefriend_ONOFF.core.utils import now_utc_iso    # 현재 UTC 시각을 ISO 포맷으로 반환하는 함수
+from core.config import USER_FILE     # 로컬에 저장될 user_info.json 파일 경로
+from core.utils import now_utc_iso    # 현재 UTC 시각을 ISO 포맷으로 반환하는 함수
 
 # ─────────────────────────────────────────────────────────────
 # 🧩 (1) 로컬 user_id 읽기

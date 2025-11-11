@@ -21,7 +21,7 @@ def run_auto_tests():
     
     # API 키 확인
     try:
-        from financefriend_ONOFF.core.config import OPENAI_API_KEY, USE_OPENAI
+        from core.config import OPENAI_API_KEY, USE_OPENAI
         
         if not OPENAI_API_KEY:
             print("⚠️  OpenAI API 키가 설정되지 않았습니다.")
@@ -37,7 +37,7 @@ def run_auto_tests():
     
     # 페르소나 함수 임포트
     try:
-        from financefriend_ONOFF.persona.persona import (
+        from persona.persona import (
             albwoong_persona_reply, 
             validate_albwoong_response
         )
