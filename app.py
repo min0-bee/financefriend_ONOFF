@@ -68,6 +68,48 @@ def main():
     
     with st.sidebar:
         render_llm_diagnostics()
+
+        st.markdown("### 🔍 RAG 성능 모니터")
+        last_init = st.session_state.get("rag_last_initialize_perf")
+        last_query = st.session_state.get("rag_last_query_perf")
+        perf_logs = st.session_state.get("rag_perf_logs")
+
+        if last_init:
+            st.write("마지막 초기화(ms)", last_init)
+        else:
+            st.caption("초기화 로그가 아직 없습니다.")
+
+        if last_query:
+            st.write("마지막 검색(ms)", last_query)
+        else:
+            st.caption("검색 로그가 아직 없습니다.")
+
+        if perf_logs:
+            with st.expander("최근 측정 이력 (최대 10건)"):
+                st.json(perf_logs)
+        else:
+            st.caption("누적 성능 로그가 없습니다.")
+
+        cache_source = st.session_state.get("rag_cache_source")
+        if cache_source:
+            st.caption(f"RAG 캐시 소스: {cache_source}")
+
+        st.markdown("### 📰 뉴스 로딩 모니터")
+        news_perf = st.session_state.get("news_last_fetch_perf")
+        if news_perf:
+            st.write("마지막 로드", news_perf)
+        else:
+            st.caption("뉴스 로드 로그가 아직 없습니다.")
+
+        news_logs = st.session_state.get("news_perf_logs")
+        if news_logs:
+            with st.expander("최근 뉴스 로드 기록"):
+                st.json(news_logs)
+
+        news_source = st.session_state.get("news_cache_source")
+        if news_source:
+            st.caption(f"뉴스 데이터 소스: {news_source}")
+
     # ⑥ 하단: 내부 분석용 로그 뷰어
     st.markdown("---")
     LogViewer()
