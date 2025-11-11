@@ -768,7 +768,6 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
         return_rag_info=False: 마크다운 형식의 용어 설명 문자열
         return_rag_info=True: (마크다운 형식의 용어 설명, RAG 메타데이터 또는 None) 튜플
     """
-
     rag_info: Optional[Dict] = None
 
     if st.session_state.get("rag_initialized", False):
@@ -830,15 +829,27 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
                         return response, rag_info
                     return response
         except Exception as e:
-            st.warning(f"⚠️ RAG 검색 중 오류, 기본 사전 사용: {e}")
+            st.warning(f"⚠️ RAG 검색 중 오류 발생, 기본 사전을 사용합니다: {e}")
+            if return_rag_info:
+                rag_info = {
+                    "search_method": None,
+                    "matched_term": None,
+                    "source": "fallback",
+                    "error": "rag_exception",
+                    "exception": str(e),
+                }
 
     terms = st.session_state.get("financial_terms", DEFAULT_TERMS)
 
     if term not in terms:
-        message = f"'{term}'에 대한 정보가 아직 없어. 다른 용어를 선택해줘."
+        error_msg = f"'{term}'에 대한 정보가 아직 없어. 다른 용어를 선택해줘."
         if return_rag_info:
-            return message, None
-        return message
+            if rag_info is None:
+                rag_info = {}
+            rag_info.setdefault("source", "default_terms")
+            rag_info["error"] = "term_not_found"
+            return error_msg, rag_info
+        return error_msg
 
     info = terms[term]
     parts: List[str] = []
@@ -860,5 +871,9 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
     response = "\n".join([p for p in parts if p])
 
     if return_rag_info:
-        return response, None
+        if rag_info is None:
+            rag_info = {"source": "default_terms"}
+        else:
+            rag_info.setdefault("source", "default_terms")
+        return response, rag_info
     return response

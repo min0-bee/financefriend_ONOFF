@@ -38,8 +38,7 @@ ALBWOONG_OPENERS = [
     "나는 어려운 말을 일상으로 바꾸는 걸 좋아해.",
     "이게 무슨 뜻이지? 싶을 때, 바로 나를 불러!",
     "커피 한 잔 하면서 천천히 들어볼래?",
-    "요즘 뉴스에 자주 나오던데, 궁금했지? 내가 알려줄게!",
-    "오늘도 궁금한 단어를 만나러 왔어!",
+    "요즘 뉴스에 자주 나오던 이 단어어, 궁금했지? 내가 알려줄게!",
     "오늘도 지식 한 스푼, 알부엉과 함께 채워보자!",
     "모르는 걸 물어보는 게 진짜 지혜야. 시작해볼까?"
 ]
@@ -118,6 +117,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
     # 입력창
     user_input = st.chat_input("궁금한 금융 용어를 입력하세요...")
     if user_input:
+
         t0 = time.time()
         log_event("chat_question", message=user_input, source="chat", surface="sidebar")
         st.session_state.chat_history.append({"role": "user", "content": user_input})
