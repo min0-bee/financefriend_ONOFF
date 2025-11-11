@@ -387,8 +387,12 @@ def initialize_rag_system():
             documents.append(search_text)
 
             # 메타데이터: 전체 정보 저장
+            # 공백 제거된 정규화된 용어도 저장 (검색 시 사용)
+            normalized_term = term.replace(" ", "").replace("\u3000", "")  # 일반 공백 및 전각 공백 제거
+            
             metadatas.append({
-                "term": term,
+                "term": term,  # 원본 용어
+                "term_normalized": normalized_term,  # 공백 제거된 정규화 용어
                 "definition": definition,
                 "analogy": analogy,
                 "importance": str(row.get("왜 중요?", "")).strip(),
@@ -503,19 +507,23 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
             all_data = collection.get()
 
             if all_data and all_data['metadatas']:
-                # 정확한 용어 매칭 (대소문자 무시, 완전 일치)
+                # 입력 용어 정규화 (공백 제거, 소문자 변환)
+                normalized_input = term.replace(" ", "").replace("\u3000", "").lower().strip()
+                
+                # 정확한 용어 매칭 (대소문자 무시, 공백 무시, 완전 일치)
                 for metadata in all_data['metadatas']:
                     rag_term = metadata.get('term', '').strip()
+                    rag_term_normalized = metadata.get('term_normalized', rag_term.replace(" ", "").replace("\u3000", "")).lower()
 
-                    # 용어가 정확히 일치하는지 확인
-                    if rag_term.lower() == term.lower():
+                    # 원본 용어 또는 정규화된 용어가 일치하는지 확인
+                    if (rag_term.lower() == term.lower() or 
+                        rag_term_normalized == normalized_input):
 
                         # RAG 정보 수집
                         rag_info = {
                             "search_method": "exact_match",
                             "matched_term": rag_term,
-                            "source": "rag",
-                            "synonym_used": synonym.lower() == term.lower() if synonym else False
+                            "source": "rag"
                         }
 
                         # 매칭된 용어 정보로 설명 생성
@@ -549,6 +557,55 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False) ->
                         if return_rag_info:
                             return response, rag_info
                         return response
+                
+                # 정확 매칭 실패 시 벡터 검색으로 fallback
+                try:
+                    vector_results = search_terms_by_rag(term, top_k=1)
+                    if vector_results and len(vector_results) > 0:
+                        # 벡터 검색 결과의 첫 번째 항목 사용
+                        metadata = vector_results[0]
+                        rag_term = metadata.get('term', term)
+                        
+                        rag_info = {
+                            "search_method": "vector_search",
+                            "matched_term": rag_term,
+                            "source": "rag"
+                        }
+                        
+                        # 매칭된 용어 정보로 설명 생성
+                        term_name = rag_term
+                        definition = metadata.get("definition", "")
+                        analogy = metadata.get("analogy", "")
+                        importance = metadata.get("importance", "")
+                        correction = metadata.get("correction", "")
+                        example = metadata.get("example", "")
+
+                        # 마크다운 포맷으로 친절한 설명 구성
+                        response = f"**{term_name}** 에 대해 설명해드릴게요! 🎯\n\n"
+
+                        if definition:
+                            response += f"📖 **정의**\n{definition}\n\n"
+
+                        if analogy:
+                            response += f"🌟 **비유로 이해하기**\n{analogy}\n\n"
+
+                        if importance:
+                            response += f"❗ **왜 중요할까요?**\n{importance}\n\n"
+
+                        if correction:
+                            response += f"⚠️ **흔한 오해**\n{correction}\n\n"
+
+                        if example:
+                            response += f"📰 **예시**\n{example}\n\n"
+
+                        response += "더 궁금한 점이 있으시면 언제든지 물어보세요!"
+
+                        if return_rag_info:
+                            return response, rag_info
+                        return response
+                except Exception as vector_error:
+                    # 벡터 검색도 실패한 경우는 아래 fallback으로 진행
+                    pass
 
         except Exception as e:
             st.warning(f"⚠️ RAG 검색 중 오류 발생, 기본 사전을 사용합니다: {e}")
