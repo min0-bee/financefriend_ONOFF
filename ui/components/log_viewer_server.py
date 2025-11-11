@@ -10,6 +10,16 @@ import streamlit as st
 import pandas as pd
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+import json
+import importlib
+
+px = None
+try:
+    if importlib.util.find_spec("plotly.express"):
+        px = importlib.import_module("plotly.express")
+except Exception:
+    px = None
+import json
 
 # requests 라이브러리
 try:
@@ -454,9 +464,21 @@ def _fetch_event_logs_from_supabase(user_id: Optional[str] = None, limit: int = 
         
         if response.data:
             df = pd.DataFrame(response.data)
-            # event_time을 datetime으로 변환
             if "event_time" in df.columns:
                 df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
+            if "payload" in df.columns:
+                def _extract_term(payload):
+                    if isinstance(payload, dict):
+                        return payload.get("term") or payload.get("payload", {}).get("term")
+                    if isinstance(payload, str):
+                        try:
+                            data = json.loads(payload)
+                            if isinstance(data, dict):
+                                return data.get("term") or (data.get("payload") or {}).get("term")
+                        except Exception:
+                            return None
+                    return None
+                df["term_from_payload"] = df["payload"].apply(_extract_term)
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -464,96 +486,172 @@ def _fetch_event_logs_from_supabase(user_id: Optional[str] = None, limit: int = 
         return pd.DataFrame()
 
 
+def _to_kst(series):
+    dt = pd.to_datetime(series, errors="coerce", utc=True)
+    return dt.dt.tz_convert("Asia/Seoul")
+
+
 def render():
-    """서버에서 데이터를 가져와서 로그 뷰어 렌더링"""
+    """
+    서버에서 데이터를 가져와서 로그 뷰어 렌더링
+    """
     st.markdown("## 📊 로그 뷰어")
-    
+
     # event_log 중심 모드 (Supabase에서 직접 가져오기)
     if not API_ENABLE and SUPABASE_ENABLE:
         st.info("📊 event_log 중심 모드: Supabase에서 데이터를 가져옵니다.")
-        
-        user_id = _get_user_id()
-        
+
+        viewer_user_id = _get_user_id()
+
         with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
-            df = _fetch_event_logs_from_supabase(user_id=user_id, limit=1000)
-        
+            df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
+
         if df.empty:
             st.info("📭 아직 이벤트 로그가 없습니다. 앱을 사용하면 데이터가 수집됩니다.")
             return
-        
-        # 통계 표시
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("📊 총 이벤트", len(df))
-        with col2:
-            if "user_id" in df.columns:
-                unique_users = df["user_id"].nunique()
-                st.metric("👥 사용자", unique_users)
-        with col3:
-            if "event_name" in df.columns:
-                unique_events = df["event_name"].nunique()
-                st.metric("🏷️ 이벤트 타입", unique_events)
-        
-        st.markdown("---")
-        
-        # 필터 옵션
-        filter_col1, filter_col2 = st.columns(2)
-        with filter_col1:
-            time_filter = st.selectbox(
-                "⏰ 기간 필터",
-                options=["전체", "30분", "1시간", "반나절 (6시간)", "하루"],
-                index=0
-            )
-        
-        with filter_col2:
-            event_filter = st.multiselect(
-                "🏷️ 이벤트 타입 필터",
-                options=df["event_name"].unique().tolist() if "event_name" in df.columns else [],
-                default=[]
-            )
-        
-        # 기간 필터 적용
-        if time_filter != "전체":
-            now = datetime.now()
-            if time_filter == "30분":
-                time_cutoff = now - timedelta(minutes=30)
-            elif time_filter == "1시간":
-                time_cutoff = now - timedelta(hours=1)
-            elif time_filter == "반나절 (6시간)":
-                time_cutoff = now - timedelta(hours=6)
-            elif time_filter == "하루":
-                time_cutoff = now - timedelta(days=1)
-            
-            if "event_time" in df.columns:
-                df = df[df["event_time"] >= time_cutoff]
-        
-        # 이벤트 타입 필터 적용
-        if event_filter:
-            if "event_name" in df.columns:
-                df = df[df["event_name"].isin(event_filter)]
-        
-        # 데이터 표시
-        st.markdown("### 📄 이벤트 로그")
-        if "event_time" in df.columns:
-            df = df.sort_values("event_time", ascending=False)
-        
-        # 주요 컬럼만 표시
-        display_columns = ["event_time", "event_name", "user_id", "session_id", "surface", "source", "ref_id"]
-        available_columns = [col for col in display_columns if col in df.columns]
-        
-        if available_columns:
-            st.dataframe(df[available_columns], use_container_width=True, height=420)
+
+        df["event_time"] = _to_kst(df["event_time"])
+        df = df.sort_values("event_time")
+
+        unique_users = df["user_id"].dropna().unique().tolist()
+        with st.expander("필터", expanded=True):
+            col_user, col_time, col_event = st.columns([2, 2, 2])
+            with col_user:
+                if unique_users:
+                    selected_user = st.selectbox(
+                        "👤 사용자 필터",
+                        options=["전체"] + unique_users,
+                        index=0
+                    )
+                else:
+                    selected_user = "전체"
+            with col_time:
+                now_kst = pd.Timestamp.now(tz="Asia/Seoul")
+                time_ranges = {
+                    "최근 10분": now_kst - pd.Timedelta(minutes=10),
+                    "최근 1시간": now_kst - pd.Timedelta(hours=1),
+                    "최근 6시간": now_kst - pd.Timedelta(hours=6),
+                    "최근 24시간": now_kst - pd.Timedelta(hours=24),
+                    "최근 3일": now_kst - pd.Timedelta(days=3),
+                    "최근 7일": now_kst - pd.Timedelta(days=7),
+                    "전체 기간": None,
+                }
+                selected_time_range = st.selectbox("⏱️ 기간 범위", list(time_ranges.keys()), index=2)
+            with col_event:
+                event_types = ["전체"] + sorted(df["event_name"].dropna().unique().tolist())
+                selected_event_type = st.selectbox("🏷️ 이벤트 타입 필터", event_types)
+
+        df_view = df.copy()
+        if selected_user != "전체":
+            df_view = df_view[df_view["user_id"] == selected_user]
+        if selected_time_range != "전체 기간":
+            cutoff_time = time_ranges[selected_time_range]
+            df_view = df_view[df_view["event_time"] >= cutoff_time]
+        if selected_event_type != "전체":
+            df_view = df_view[df_view["event_name"] == selected_event_type]
+
+        st.caption(
+            f"필터 결과: {len(df_view):,}건 / 사용자 {df_view['user_id'].nunique()}명 / 이벤트 종류 {df_view['event_name'].nunique()}개"
+        )
+
+        colA, colB, colC = st.columns(3)
+        with colA:
+            st.metric("뉴스 클릭", int((df_view["event_name"] == "news_click").sum()))
+        with colB:
+            st.metric("챗 질문", int((df_view["event_name"] == "chat_question").sum()))
+        with colC:
+            st.metric("RAG 답변", int((df_view["event_name"] == "glossary_answer").sum()))
+
+        st.markdown("### 🔄 전환 퍼널 요약")
+        click_events = df_view[df_view["event_name"] == "news_click"]
+        detail_events = df_view[df_view["event_name"] == "news_detail_open"]
+        chat_events = df_view[df_view["event_name"] == "chat_question"]
+        rag_events = df_view[df_view["event_name"] == "glossary_answer"]
+
+        if not click_events.empty:
+            first_click = click_events["event_time"].min()
+            base_count = len(click_events)
+            detail_count = (detail_events["event_time"] >= first_click).sum()
+            chat_count = (chat_events["event_time"] >= first_click).sum()
+            rag_count = (rag_events["event_time"] >= first_click).sum()
+            funnel_df = pd.DataFrame([
+                {"단계": "뉴스 클릭", "건수": base_count, "전환율 (%)": 100.0},
+                {"단계": "뉴스 상세 열람", "건수": detail_count, "전환율 (%)": (detail_count / base_count * 100) if base_count else 0},
+                {"단계": "챗 질문", "건수": chat_count, "전환율 (%)": (chat_count / base_count * 100) if base_count else 0},
+                {"단계": "RAG 답변", "건수": rag_count, "전환율 (%)": (rag_count / base_count * 100) if base_count else 0},
+            ])
+            st.caption("기준 단위: 이벤트 발생 건수 (동일 유저의 여러 클릭 포함)")
+            st.dataframe(funnel_df, use_container_width=True, height=200)
         else:
-            st.dataframe(df, use_container_width=True, height=420)
-        
-        # 이벤트 타입별 통계
-        if "event_name" in df.columns:
-            st.markdown("---")
-            st.markdown("### 📊 이벤트 타입별 통계")
-            event_counts = df["event_name"].value_counts().reset_index()
-            event_counts.columns = ["이벤트 타입", "횟수"]
-            st.dataframe(event_counts, use_container_width=True)
-        
+            st.info("퍼널을 계산할 클릭 이벤트가 없습니다.")
+
+        st.markdown("### 📄 최근 이벤트 로그")
+        display_columns = [
+            "event_time", "event_name", "user_id", "session_id", "surface", "source", "ref_id"
+        ]
+        available_columns = [col for col in display_columns if col in df_view.columns]
+        if available_columns:
+            st.dataframe(
+                df_view.sort_values("event_time", ascending=False)[available_columns].head(1000),
+                use_container_width=True,
+                height=420
+            )
+        else:
+            st.dataframe(df_view.sort_values("event_time", ascending=False).head(1000), use_container_width=True, height=420)
+
+        st.markdown("### 📊 이벤트 타입별 통계")
+        event_counts = df_view["event_name"].value_counts().reset_index()
+        event_counts.columns = ["이벤트 타입", "횟수"]
+        st.dataframe(event_counts, use_container_width=True)
+        if px is not None and not event_counts.empty:
+            st.plotly_chart(
+                px.pie(event_counts.head(15), names="이벤트 타입", values="횟수", title="이벤트 타입 비율(상위 15개)"),
+                use_container_width=True
+            )
+        else:
+            st.caption("⚠️ plotly 미설치 또는 데이터 부족으로 파이 차트를 표시할 수 없습니다.")
+
+        st.markdown("### 🏷️ 용어 클릭/응답 통계")
+        term_clicks = df_view[df_view["event_name"].isin(["glossary_click", "glossary_answer"])].copy()
+        if "term" in term_clicks.columns:
+            term_clicks["term_final"] = term_clicks["term"].fillna("")
+        else:
+            term_clicks["term_final"] = ""
+        if "term_from_payload" in term_clicks.columns:
+            term_clicks.loc[term_clicks["term_final"] == "", "term_final"] = term_clicks["term_from_payload"]
+        term_clicks = term_clicks[term_clicks["term_final"].notna() & (term_clicks["term_final"] != "")]
+
+        if not term_clicks.empty:
+            term_summary = (
+                term_clicks.groupby(["term_final", "event_name"])
+                .size()
+                .unstack(fill_value=0)
+            )
+            term_summary["total"] = term_summary.sum(axis=1)
+            term_summary = term_summary.sort_values("total", ascending=False)
+            st.dataframe(term_summary, use_container_width=True, height=260)
+            top_terms = term_summary.head(15)
+            st.bar_chart(top_terms["total"])
+        else:
+            st.caption("용어 클릭/응답 데이터가 없습니다.")
+
+        st.markdown("### 👤 사용자 활동 요약")
+        user_summary = (
+            df_view.groupby("user_id", dropna=False)
+                  .agg(
+                      events=("event_name", "count"),
+                      first_seen=("event_time", "min"),
+                      last_seen=("event_time", "max"),
+                      click_count=("event_name", lambda x: (x == "news_click").sum()),
+                      detail_count=("event_name", lambda x: (x == "news_detail_open").sum()),
+                      chat_count=("event_name", lambda x: (x == "chat_question").sum()),
+                      rag_count=("event_name", lambda x: (x == "glossary_answer").sum()),
+                  )
+                  .reset_index()
+                  .sort_values("events", ascending=False)
+        )
+        st.dataframe(user_summary, use_container_width=True, height=260)
+
         return
     
     # API 모드 (기존 로직)
@@ -946,8 +1044,7 @@ def render():
                                 
                                 # 시각화 (선택)
                                 if len(term_counts) > 0:
-                                    try:
-                                        import plotly.express as px
+                                    if px is not None:
                                         top_terms = term_counts.head(10)
                                         fig = px.bar(
                                             top_terms, 
@@ -958,7 +1055,7 @@ def render():
                                         )
                                         fig.update_xaxes(tickangle=45)
                                         st.plotly_chart(fig, use_container_width=True)
-                                    except ImportError:
+                                    else:
                                         st.caption("💡 plotly를 설치하면 시각화를 볼 수 있습니다: `pip install plotly`")
                             else:
                                 st.info("금융용어 클릭/질문 데이터가 없습니다.")
@@ -1160,8 +1257,7 @@ def render():
                 
                 # 시각화 (선택)
                 if len(term_counts) > 0:
-                    try:
-                        import plotly.express as px
+                    if px is not None:
                         top_terms = term_counts.head(10)
                         fig = px.bar(
                             top_terms, 
@@ -1172,7 +1268,7 @@ def render():
                         )
                         fig.update_xaxes(tickangle=45)
                         st.plotly_chart(fig, use_container_width=True)
-                    except ImportError:
+                    else:
                         st.caption("💡 plotly를 설치하면 시각화를 볼 수 있습니다: `pip install plotly`")
             else:
                 st.info("금융용어 클릭/질문 데이터가 없습니다.")

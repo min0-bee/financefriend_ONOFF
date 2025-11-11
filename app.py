@@ -41,6 +41,21 @@ def main():
     # init_app() 내부에서 각 단계별 스피너가 표시됨
     init_app()
 
+    st.session_state.setdefault("main_view", "뉴스/챗봇")
+
+    with st.sidebar:
+        view_options = ["뉴스/챗봇", "로그 뷰어"]
+        current_view = st.session_state.get("main_view", "뉴스/챗봇")
+        selected_view = st.radio("화면 선택", view_options, index=view_options.index(current_view))
+        st.session_state["main_view"] = selected_view
+
+        render_llm_diagnostics()
+
+    if st.session_state["main_view"] == "로그 뷰어":
+        st.title("📚 내부 로그 뷰어")
+        LogViewer()
+        return
+
     # ② 페이지 기본 레이아웃 분할 (7:3 비율)
     col_main, col_chat = st.columns([7, 3])
 
@@ -49,11 +64,9 @@ def main():
         st.title("📰 금융 뉴스 도우미")
 
         if st.session_state.selected_article is None:
-            # 요약 + 목록
             SummaryBox(st.session_state.news_articles, use_openai=USE_OPENAI)
             NewsList(st.session_state.news_articles)
         else:
-            # 상세
             ArticleDetail()
 
     # ④ 오른쪽 챗봇 영역
@@ -62,54 +75,6 @@ def main():
 
     # ⑤ 왼쪽 사이드바: 용어 목록, 설정, 사용법
     Sidebar(st.session_state.financial_terms)
-    
-    with st.sidebar:
-        render_llm_diagnostics()
-
-        st.markdown("### 🔍 RAG 성능 모니터")
-        last_init = st.session_state.get("rag_last_initialize_perf")
-        last_query = st.session_state.get("rag_last_query_perf")
-        perf_logs = st.session_state.get("rag_perf_logs")
-
-        if last_init:
-            st.write("마지막 초기화(ms)", last_init)
-        else:
-            st.caption("초기화 로그가 아직 없습니다.")
-
-        if last_query:
-            st.write("마지막 검색(ms)", last_query)
-        else:
-            st.caption("검색 로그가 아직 없습니다.")
-
-        if perf_logs:
-            with st.expander("최근 측정 이력 (최대 10건)"):
-                st.json(perf_logs)
-        else:
-            st.caption("누적 성능 로그가 없습니다.")
-
-        cache_source = st.session_state.get("rag_cache_source")
-        if cache_source:
-            st.caption(f"RAG 캐시 소스: {cache_source}")
-
-        st.markdown("### 📰 뉴스 로딩 모니터")
-        news_perf = st.session_state.get("news_last_fetch_perf")
-        if news_perf:
-            st.write("마지막 로드", news_perf)
-        else:
-            st.caption("뉴스 로드 로그가 아직 없습니다.")
-
-        news_logs = st.session_state.get("news_perf_logs")
-        if news_logs:
-            with st.expander("최근 뉴스 로드 기록"):
-                st.json(news_logs)
-
-        news_source = st.session_state.get("news_cache_source")
-        if news_source:
-            st.caption(f"뉴스 데이터 소스: {news_source}")
-
-    # ⑥ 하단: 내부 분석용 로그 뷰어
-    st.markdown("---")
-    LogViewer()
 
 
 

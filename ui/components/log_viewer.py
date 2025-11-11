@@ -17,54 +17,156 @@ def show_log_viewer():
 
 def render():
     st.markdown("## 📊 로컬 로그 뷰어")
-    
-    # CSV 파일 정보 표시
-    if os.path.exists(LOG_FILE):
-        file_size = os.path.getsize(LOG_FILE)
-        file_mtime = datetime.fromtimestamp(os.path.getmtime(LOG_FILE))
-        
-        col_info1, col_info2, col_info3 = st.columns(3)
-        with col_info1:
-            st.caption(f"📁 파일 위치: `{LOG_FILE}`")
-        with col_info2:
-            st.caption(f"📏 파일 크기: {file_size:,} bytes ({file_size/1024:.2f} KB)")
-        with col_info3:
-            st.caption(f"🕐 최종 수정: {file_mtime.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # CSV 파일 다운로드 버튼
-        with open(LOG_FILE, "rb") as f:
-            st.download_button(
-                label="📥 CSV 파일 다운로드",
-                data=f.read(),
-                file_name="events.csv",
-                mime="text/csv",
-                help="현재 로그 파일을 다운로드합니다"
-            )
-    else:
+
+    if not os.path.exists(LOG_FILE):
         st.info(f"📁 로그 파일이 아직 생성되지 않았습니다. (`{LOG_FILE}`)")
         st.caption("이벤트가 발생하면 자동으로 생성됩니다.")
         return
-    
-    st.markdown("---")
-    
+
     df = load_logs_as_df(LOG_FILE)
     if df.empty:
         st.info("로그 파일이 비어있습니다.")
         return
 
+    if pd.api.types.is_datetime64tz_dtype(df["event_time"]):
+        parsed = df["event_time"]
+    else:
+        parsed = pd.to_datetime(df["event_time"], errors="coerce")
+        if parsed.dt.tz is None:
+            parsed = parsed.dt.tz_localize("UTC")
+        else:
+            parsed = parsed.dt.tz_convert("UTC")
+    df["event_time_kst"] = parsed.dt.tz_convert("Asia/Seoul")
+    df = df.sort_values("event_time_kst")
+
+    now_kst = pd.Timestamp.now(tz="Asia/Seoul")
+    time_options = {
+        "최근 10분": now_kst - pd.Timedelta(minutes=10),
+        "최근 1시간": now_kst - pd.Timedelta(hours=1),
+        "최근 6시간": now_kst - pd.Timedelta(hours=6),
+        "최근 24시간": now_kst - pd.Timedelta(hours=24),
+        "최근 3일": now_kst - pd.Timedelta(days=3),
+        "최근 7일": now_kst - pd.Timedelta(days=7),
+    }
+    time_labels = list(time_options.keys()) + ["전체 기간"]
+    selected_range = st.selectbox("⏱️ 시간 범위", time_labels, index=len(time_labels) - 1)
+
+    if selected_range != "전체 기간":
+        cutoff = time_options[selected_range]
+        df_view = df[df["event_time_kst"] >= cutoff]
+    else:
+        df_view = df
+
+    df_view = df_view.copy()
+    df_view["event_time"] = df_view["event_time_kst"].dt.tz_localize(None)
+    df_view.drop(columns=["event_time_kst"], inplace=True, errors="ignore")
+
+    st.caption(
+        f"필터: {selected_range} / 이벤트 {len(df_view):,}건 / 세션 {df_view['session_id'].nunique()}개"
+    )
+
+    col_info1, col_info2, col_info3 = st.columns(3)
+    with col_info1:
+        st.caption(f"📁 파일 위치: `{LOG_FILE}`")
+    with col_info2:
+        file_size = os.path.getsize(LOG_FILE)
+        st.caption(f"📏 파일 크기: {file_size:,} bytes ({file_size/1024:.2f} KB)")
+    with col_info3:
+        file_mtime = datetime.fromtimestamp(os.path.getmtime(LOG_FILE))
+        st.caption(f"🕐 최종 수정: {file_mtime.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    with open(LOG_FILE, "rb") as f:
+        st.download_button(
+            label="📥 CSV 파일 다운로드",
+            data=f.read(),
+            file_name="events.csv",
+            mime="text/csv",
+            help="현재 로그 파일을 다운로드합니다"
+        )
+
+    st.markdown("---")
+
+    if df_view.empty:
+        st.info("선택한 기간에 해당하는 로그가 없습니다.")
+        return
+
     # ===== 상단 요약 (세션 기준 기본 뷰) =====
     colA, colB, colC, colD = st.columns(4)
     with colA:
-        st.metric("총 이벤트", f"{len(df):,}")
+        st.metric("총 이벤트", f"{len(df_view):,}")
     with colB:
-        st.metric("세션 수", df["session_id"].nunique())
+        st.metric("세션 수", df_view["session_id"].nunique())
     with colC:
-        st.metric("유저 수", df["user_id"].nunique())
+        st.metric("유저 수", df_view["user_id"].nunique())
     with colD:
-        st.metric("이벤트 종류", df["event_name"].nunique())
+        st.metric("이벤트 종류", df_view["event_name"].nunique())
+
+    colE1, colE2, colE3 = st.columns(3)
+    with colE1:
+        st.metric("뉴스 클릭", int((df_view["event_name"] == "news_click").sum()))
+    with colE2:
+        st.metric("챗 질문", int((df_view["event_name"] == "chat_question").sum()))
+    with colE3:
+        st.metric("RAG 답변", int((df_view["event_name"] == "glossary_answer").sum()))
+
+    st.markdown("### 🔄 전환 퍼널 요약")
+    funnel_dimension = "기준 이벤트"
+
+    def _count_after(event_list, pivot_event):
+        if pivot_event.empty or event_list.empty:
+            return 0
+        earliest = pivot_event["event_time"].min()
+        return int((event_list["event_time"] >= earliest).sum())
+
+    click_events = df_view[df_view["event_name"] == "news_click"]
+    detail_events = df_view[df_view["event_name"] == "news_detail_open"]
+    chat_events = df_view[df_view["event_name"] == "chat_question"]
+    rag_events = df_view[df_view["event_name"] == "glossary_answer"]
+
+    base_count = len(click_events)
+    detail_count = _count_after(detail_events, click_events)
+    chat_count = _count_after(chat_events, click_events)
+    rag_count = _count_after(rag_events, click_events)
+
+    funnel_df = pd.DataFrame([
+        {
+            "단계": "뉴스 클릭",
+            "건수": base_count,
+            "전환율 (%)": 100.0
+        },
+        {
+            "단계": "뉴스 상세 열람",
+            "건수": detail_count,
+            "전환율 (%)": (detail_count / base_count * 100) if base_count else 0
+        },
+        {
+            "단계": "챗 질문",
+            "건수": chat_count,
+            "전환율 (%)": (chat_count / base_count * 100) if base_count else 0
+        },
+        {
+            "단계": "RAG 답변",
+            "건수": rag_count,
+            "전환율 (%)": (rag_count / base_count * 100) if base_count else 0
+        },
+    ])
+    st.caption("기준 단위: 이벤트 발생 건수 (동일 유저의 여러 클릭 포함)")
+    st.dataframe(funnel_df, use_container_width=True, height=200)
+
+    st.markdown("### 🕒 최근 이벤트 스트림")
+    recent_cols = [
+        col for col in ["event_time","event_name","surface","source","user_id","session_id","news_id","term","message"]
+        if col in df_view.columns
+    ]
+    st.dataframe(
+        df_view.sort_values("event_time", ascending=False).head(30)[recent_cols],
+        use_container_width=True,
+        height=320
+    )
+
+    st.markdown("---")
 
     # ===== [추가] 유저 기준 요약 스위치 & 요약 카드 =====
-    st.markdown("---")
     agg_by_user = st.toggle(
         "👤 유저(user_id) 기준으로 요약 보기",
         value=False,
@@ -74,7 +176,7 @@ def render():
     if agg_by_user:
         # 유저 단위 집계
         g = (
-            df.groupby("user_id", dropna=False)
+            df_view.groupby("user_id", dropna=False)
               .agg(
                   events=("event_name", "count"),
                   sessions=("session_id", "nunique"),
@@ -104,7 +206,7 @@ def render():
         st.markdown("### 🔎 특정 유저 타임라인")
         target_user = st.selectbox("유저 선택", options=g["user_id"].tolist() if len(g) else [])
         if target_user:
-            udf = df[df["user_id"] == target_user].copy().sort_values("event_time")
+            udf = df_view[df_view["user_id"] == target_user].copy().sort_values("event_time")
 
             st.write(f"세션 수: {udf['session_id'].nunique()}개")
             sess_sum = (
@@ -142,37 +244,37 @@ def render():
     ])
 
     with tab1:
-        st.caption(f"총 {len(df):,}개의 로그가 있습니다. (CSV 파일: {LOG_FILE})")
+        st.caption(f"총 {len(df_view):,}개의 로그가 있습니다. (CSV 파일: {LOG_FILE})")
         
         # 최근 로그만 보기 옵션
         show_recent_only = st.checkbox("최근 100개만 보기", value=False)
-        display_df = df.tail(100) if show_recent_only else df
+        display_df = df_view.tail(100) if show_recent_only else df_view
         
         st.dataframe(display_df, use_container_width=True, height=420)
         
         if show_recent_only:
-            st.caption(f"전체 {len(df):,}개 중 최근 100개만 표시 중입니다.")
+            st.caption(f"전체 {len(df_view):,}개 중 최근 100개만 표시 중입니다.")
 
     with tab2:
         st.caption("이벤트별 건수/최근 10건")
-        counts = df["event_name"].value_counts().rename_axis("event_name").reset_index(name="count")
+        counts = df_view["event_name"].value_counts().rename_axis("event_name").reset_index(name="count")
         st.dataframe(counts, use_container_width=True, height=250)
         try:
             st.bar_chart(data=counts.set_index("event_name"))
         except Exception:
             pass
 
-        nc = (df["event_name"] == "news_click").sum()
-        ndo = (df["event_name"] == "news_detail_open").sum()
+        nc = (df_view["event_name"] == "news_click").sum()
+        ndo = (df_view["event_name"] == "news_detail_open").sum()
         conv = (ndo / nc * 100) if nc else 0
         st.write(f"**클릭→진입 전환율(rough)**: {conv:.1f}%  (clicks={nc}, opens={ndo})")
 
     with tab3:
         st.caption("세션을 선택해 타임라인 확인")
-        session_ids = df["session_id"].dropna().unique().tolist()
+        session_ids = df_view["session_id"].dropna().unique().tolist()
         sess = st.selectbox("세션 선택", options=session_ids, index=0 if session_ids else None)
         if sess:
-            sdf = df[df["session_id"] == sess].copy().sort_values("event_time")
+            sdf = df_view[df_view["session_id"] == sess].copy().sort_values("event_time")
             sdf["next_time"] = sdf["event_time"].shift(-1)
             sdf["gap_sec"] = (sdf["next_time"] - sdf["event_time"]).dt.total_seconds()
             st.dataframe(
@@ -182,8 +284,8 @@ def render():
 
     with tab4:
         st.caption("용어 클릭/응답 길이 통계")
-        gclick = df[df["event_name"] == "glossary_click"]
-        gans = df[df["event_name"] == "glossary_answer"]
+        gclick = df_view[df_view["event_name"] == "glossary_click"]
+        gans = df_view[df_view["event_name"] == "glossary_answer"]
 
         col1, col2 = st.columns(2)
         with col1:
