@@ -118,6 +118,8 @@ def render(terms: dict[str, dict], use_openai: bool=False):
     # 입력창
     user_input = st.chat_input("궁금한 금융 용어를 입력하세요...")
     if user_input:
+        cleaned_input = re.sub(r"\s+", "", user_input.strip())
+        normalized_input = re.sub(r"[?!.,]", " ", user_input)
         t0 = time.time()
         log_event("chat_question", message=user_input, source="chat", surface="sidebar")
         st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -137,18 +139,21 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                 all_data = collection.get()
 
                 if all_data and all_data['metadatas']:
-                    # 정확한 용어 매칭 시도 (조사/문장부호 포함)
-                    def _term_exact_match(text: str, term: str) -> bool:
-                        if not term:
-                            return False
-                        lookahead = r"(?=($|\s|[?!.,]|[은는이가을를과와로도의]))"
-                        pattern = rf"(^|\s){re.escape(term)}{lookahead}"
-                        return re.search(pattern, text, re.IGNORECASE) is not None
-
                     for metadata in all_data['metadatas']:
                         rag_term = metadata.get('term', '').strip()
 
-                        if _term_exact_match(user_input, rag_term):
+                        if not rag_term:
+                            continue
+
+                        boundary_pattern = (
+                            r'(^|\s)' + re.escape(rag_term) + r'($|\s|[?!.,]|[은는이가을를과와로도의])'
+                        )
+
+                        if (
+                            re.search(boundary_pattern, user_input, re.IGNORECASE)
+                            or re.search(boundary_pattern, normalized_input, re.IGNORECASE)
+                            or re.search(boundary_pattern, cleaned_input, re.IGNORECASE)
+                        ):
                             matched_term = rag_term
                             is_financial_question = True
                             break
@@ -168,6 +173,13 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                         if has_financial_keyword:
                             RAG_SIM_THRESHOLD = 0.38  # 코사인 거리(0~2, 낮을수록 유사)
                             rag_results = search_terms_by_rag(user_input, top_k=1)
+
+                            if not rag_results:
+                                rag_results = search_terms_by_rag(normalized_input, top_k=1)
+
+                            if not rag_results:
+                                rag_results = search_terms_by_rag(cleaned_input, top_k=1)
+
                             if rag_results:
                                 candidate = rag_results[0]
                                 candidate_term = (candidate.get('term') or '').strip()
@@ -208,9 +220,14 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         # 2) RAG 실패 시: 하드코딩된 사전에서 정확한 매칭 시도
         if explanation is None and not is_financial_question:
             for term_key in terms.keys():
-                lookahead = r"(?=($|\s|[?!.,]|[은는이가을를과와로도의]))"
-                pattern = rf"(^|\s){re.escape(term_key)}{lookahead}"
-                if re.search(pattern, user_input, re.IGNORECASE):
+                boundary_pattern = (
+                    r'(^|\s)' + re.escape(term_key) + r'($|\s|[?!.,]|[은는이가을를과와로도의])'
+                )
+                if (
+                    re.search(boundary_pattern, user_input, re.IGNORECASE)
+                    or re.search(boundary_pattern, normalized_input, re.IGNORECASE)
+                    or re.search(boundary_pattern, cleaned_input, re.IGNORECASE)
+                ):
                     explanation, rag_info = explain_term(
                         term_key,
                         st.session_state.chat_history,
