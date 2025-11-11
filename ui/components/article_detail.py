@@ -32,6 +32,8 @@ def render():
         st.markdown('<div class="article-content">', unsafe_allow_html=True)
         st.markdown(highlight_terms(article['content']), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
+        if article.get("url"):
+            st.markdown(f"[🔗 기사 원문 보기]({article['url']})")
 
         # 렌더 완료 → latency 기록
         latency_ms = int((time.time() - t0) * 1000)
@@ -58,6 +60,8 @@ def render():
         st.markdown('<div class="article-content">', unsafe_allow_html=True)
         st.markdown(highlight_terms(article['content']), unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
+        if article.get("url"):
+            st.markdown(f"[🔗 기사 원문 보기]({article['url']})")
 
     # 탭 전환 등으로 페이지가 숨겨지면 종료
     if st.session_state.get("detail_enter_logged") and is_page_hidden_eval(key=f"vis_{article.get('id')}"):

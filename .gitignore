@@ -10,6 +10,7 @@ secrets.json
 ui/__pycache__/**
 ui/components/__pycache__/**
 rag/__pycache__/**
+rag/glossary/.cache/
 data/__pycache__/**
 core/__pycache__/**
 logs/events.csv
@@ -22,3 +23,10 @@ docs/
 test_*.py
 *_test.py
 tests/
+
+# Virtual environments
+venv/
+.venv/
+
+# Python cache
+**/__pycache__/

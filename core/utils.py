@@ -181,10 +181,15 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
               }
     """
 
-    # ✅ 1. 설정값 가져오기
-    #   - 기본 모델명 (예: "gpt-4o-mini")
-    #   - OpenAI API 키
-    from core.config import DEFAULT_OPENAI_MODEL, OPENAI_API_KEY
+    try:
+        # ✅ 1. 설정값 가져오기
+        #   - 기본 모델명 (예: "gpt-4o-mini")
+        #   - OpenAI API 키
+        from core.config import DEFAULT_OPENAI_MODEL, OPENAI_API_KEY
+
+    except Exception as e:
+        st.error(f"❌ config import 실패: {e}")
+        problems.append("config import 실패")
 
     # ✅ 2. OpenAI 클라이언트 초기화
     client = get_openai_client(OPENAI_API_KEY)

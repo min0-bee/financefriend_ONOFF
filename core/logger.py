@@ -1793,6 +1793,60 @@ def _parse_message(message: str) -> str:
     return message
 
 
+def _coerce_to_text(value: Any) -> str:
+    """임의의 값을 문자열로 안전하게 변환"""
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        return value.strip()
+
+    try:
+        return json.dumps(value, ensure_ascii=False).strip()
+    except Exception:
+        return str(value).strip()
+
+
+def _extract_dialogue_message(
+    event_name: str,
+    sender_type: str,
+    kwargs: Dict[str, Any]
+) -> str:
+    """대화 메시지를 다양한 후보에서 안전하게 추출"""
+    candidates: list[Any] = []
+
+    # 1) 어시스턴트 응답은 response 우선
+    if sender_type == "assistant":
+        candidates.append(kwargs.get("response"))
+        candidates.append(kwargs.get("response_preview"))
+
+    # 2) 기본 message 필드
+    candidates.append(kwargs.get("message"))
+
+    # 3) payload 내부 후보
+    payload = kwargs.get("payload")
+    if isinstance(payload, dict):
+        for key in ("response", "response_preview", "message", "summary", "detail"):
+            if key in payload:
+                candidates.append(payload.get(key))
+
+    # 4) 용어 기반 기본 문장 (glossary 관련 이벤트)
+    term = kwargs.get("term")
+    if term:
+        candidates.append(f"{term} 용어 설명")
+
+    # 5) 마지막으로 event_name 자체도 후보
+    candidates.append(event_name)
+
+    # 후보 중 가장 먼저 문자열이 되는 값을 선택
+    for candidate in candidates:
+        text = _coerce_to_text(candidate)
+        if text:
+            return text
+
+    return ""
+
+
 def _handle_dialogue_event(
     event_name: str,
     sender_type: str,
@@ -1813,23 +1867,11 @@ def _handle_dialogue_event(
         **kwargs: 추가 파라미터
     """
     # sender_type에 따라 적절한 content 선택
-    if sender_type == "assistant":
-        # assistant의 경우: response 우선, 없으면 message 사용
-        message = kwargs.get("response") or _parse_message(kwargs.get("message", ""))
-        
-        # glossary_answer의 경우 response가 없으면 term 기반으로 기본 메시지 생성
-        if not message and event_name == "glossary_answer":
-            term = kwargs.get("term", "")
-            if term:
-                message = f"{term} 용어에 대한 설명"
-            else:
-                message = "금융 용어 설명"
-    else:
-        # user의 경우: message 사용
-        message = _parse_message(kwargs.get("message", ""))
-    
+    message = _extract_dialogue_message(event_name, sender_type, kwargs)
+
     if not message:
-        return False, "메시지가 없습니다"
+        # 비어 있는 경우 최소한 이벤트명을 기록
+        message = f"[{event_name}] empty content"
     
     dialogue_id, error = _log_dialogue(sender_type, message, intent=intent)
     
