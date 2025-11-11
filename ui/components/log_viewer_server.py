@@ -340,6 +340,20 @@ def _convert_to_events_df(
 ) -> pd.DataFrame:
     """서버 데이터를 이벤트 DataFrame으로 변환"""
     events = []
+
+    # 세션 정보에서 user_id 매핑 준비
+    session_user_map: Dict[str, str] = {}
+    session_surface_map: Dict[str, str] = {}
+    if sessions:
+        for sess in sessions:
+            sess_id = sess.get("session_id")
+            if sess_id is None:
+                continue
+            sess_key = str(sess_id)
+            session_user_map[sess_key] = sess.get("user_id", "") or ""
+            context = sess.get("context") or {}
+            if isinstance(context, dict):
+                session_surface_map[sess_key] = context.get("surface", "") or ""
     
     # agent_tasks를 dialogue_id로 매핑 (TERM 정보 추출용)
     term_map = {}  # dialogue_id -> term
@@ -424,16 +438,21 @@ def _convert_to_events_df(
             # intent에서 term 추출이 가능한지 확인 (현재는 agent_tasks에서만 가능)
             pass
         
+        session_id_val = dialogue.get("session_id")
+        session_key = str(session_id_val) if session_id_val is not None else ""
+        user_id_val = dialogue.get("user_id") or session_user_map.get(session_key, "")
+        surface_val = dialogue.get("surface") or session_surface_map.get(session_key, "")
+
         events.append({
             "event_id": f"dialogue_{dialogue_id or ''}",
             "event_time": dialogue.get("created_at", ""),
             "event_name": event_name,
-            "user_id": "",  # 대화는 session_id로 연결
-            "session_id": dialogue.get("session_id", ""),
+            "user_id": user_id_val,
+            "session_id": session_id_val or "",
             "news_id": "",
             "term": term,  # agent_tasks에서 가져온 TERM 정보
             "message": dialogue.get("content", ""),  # 대화 내용 (MESSAGE)
-            "surface": "",
+            "surface": surface_val,
             "source": "",
             "intent": intent,  # 추가 정보
         })
