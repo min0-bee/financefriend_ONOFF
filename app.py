@@ -50,10 +50,7 @@ def main():
 
         if st.session_state.selected_article is None:
             # 요약 + 목록
-            SummaryBox(  # 기존 mock summary는 여기에서 생성
-                "오늘 금융 시장은 한국은행의 기준금리 동결과 삼성전자의 배당 증액이 이슈입니다. "
-                "원/달러 1300원 돌파로 변동성 확대. 통화정책/환율 추이 주시 필요."
-            )
+            SummaryBox(st.session_state.news_articles, use_openai=USE_OPENAI)
             NewsList(st.session_state.news_articles)
         else:
             # 상세

@@ -8,6 +8,16 @@ USER_FILE = os.path.join(LOG_DIR, "user_info.json")
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 USE_OPENAI = True
 OPENAI_API_KEY = None
+DEFAULT_NEWS_SUMMARY_PROMPT = (
+    "다음은 오늘의 주요 금융 뉴스야.\n"
+    "각 항목은 '제목 :: 요약' 형식으로 정리되어 있어.\n"
+    "{articles}\n\n"
+    "이 뉴스를 바탕으로 오늘 금융 시장이 전반적으로 어떤 분위기였는지, "
+    "그리고 사람들이 알아두면 좋은 핵심 포인트를 초보자도 이해할 수 있게 정리해줘.\n\n"
+    "전문 용어가 나오면 짧은 예시를 들어 쉽게 풀어서 설명하고, "
+    "뉴스를 읽는 친구에게 이야기하듯 부드럽고 친절한 말투로 써줘.\n"
+    "전체는 4~6문장 정도로 요약해줘."
+)
 
 # Streamlit Secrets가 있으면 그것을 우선 사용
 try:
@@ -16,6 +26,8 @@ try:
         OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     if "OPENAI_MODEL" in st.secrets:
         DEFAULT_OPENAI_MODEL = st.secrets["OPENAI_MODEL"]
+    if "NEWS_SUMMARY_PROMPT" in st.secrets:
+        DEFAULT_NEWS_SUMMARY_PROMPT = st.secrets["NEWS_SUMMARY_PROMPT"]
 except Exception:
     pass
 
