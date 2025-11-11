@@ -7,41 +7,36 @@ from core.config import API_ENABLE
 import streamlit as st
 
 
-def init_app():   
-    # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등) - 빠른 작업
-    init_session_and_user()
-    
-    # ✅ 2. 금융 용어 사전 초기화 (최우선 - RAG 시스템 시작) - 스피너를 빨리 표시하기 위해
-    ensure_financial_terms()
-    
-    # ✅ 2.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (지연 실행)
-    # event_log 중심 모드에서는 선택적으로 실행 (실패해도 계속 진행)
-    # RAG 초기화 후에 실행하여 스피너가 먼저 표시되도록 함
-    if API_ENABLE:
-        user_id = st.session_state.get("user_id")
-        if user_id:
-            # 서버에 연결하여 UUID로 교체 (silent=True로 에러 숨김 - event_log만 사용 시)
-            _ensure_backend_user(user_id, silent=True)
-            # 서버 세션 생성 (로그 뷰어에서 사용하기 위해 미리 생성)
-            _ensure_backend_session()
+def init_app():
+    # 이미 초기화되었으면 스킵
+    if st.session_state.get("app_initialized", False):
+        return
 
-    # ✅ 2. 금융 용어 사전 초기화 (최우선 - RAG 시스템 시작)
+    # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등)
+    with st.spinner("👤 사용자 세션 초기화 중..."):
+        init_session_and_user()
+
+    # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드)
+    # 무거운 작업이라 스피너로 감싸서 명확히 표시
     with st.spinner("📚 금융 용어 사전 초기화 중..."):
         ensure_financial_terms()
 
-    # ✅ 2.5. 서버 연결 (선택적) - RAG 초기화가 끝난 뒤에 시도
+    # ✅ 2.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (지연 실행)
+    # event_log 중심 모드에서는 선택적으로 실행 (실패해도 계속 진행)
     if API_ENABLE:
         user_id = st.session_state.get("user_id")
-
         if user_id:
             try:
                 with st.spinner("🔗 서버 연결 중..."):
+                    # 서버에 연결하여 UUID로 교체 (silent=True로 에러 숨김 - event_log만 사용 시)
                     _ensure_backend_user(user_id, silent=True)
+                    # 서버 세션 생성 (로그 뷰어에서 사용하기 위해 미리 생성)
                     _ensure_backend_session()
             except Exception:
-                pass  # 연결 실패해도 앱 진행에는 영향 없음
+                # 연결 실패해도 계속 진행
+                pass
 
-    # ✅ 3. 세션 상태 기본값 설정 (빠른 작업)
+    # ✅ 3. 세션 상태 기본값 설정
     st.session_state.setdefault("selected_article", None)
     st.session_state.setdefault("chat_history", [])
     st.session_state.setdefault("term_click_count", 0)

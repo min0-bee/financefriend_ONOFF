@@ -1,16 +1,6 @@
 import streamlit as st
 
-# 컴포넌트 임포트
-from ui.components.summary_box import render as SummaryBox
-from ui.components.news_list import render as NewsList
-from ui.components.article_detail import render as ArticleDetail
-from ui.components.chat_panel import render as ChatPanel
-from ui.components.sidebar import render as Sidebar
-from ui.components.log_viewer_server import render as LogViewer
-
-
-
-# 📄 페이지 설정: 전체 레이아웃 및 기본 제목
+# ⚡ 즉시 페이지 설정 (모든 import 전에 실행 - Streamlit 서버를 먼저 시작하여 로딩 화면 표시)
 st.set_page_config(layout="wide", page_title="금융 뉴스 도우미")
 
 # 최소한의 import만 (무거운 모듈은 함수 내부에서 지연 로딩)
