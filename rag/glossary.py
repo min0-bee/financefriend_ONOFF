@@ -15,7 +15,10 @@ import time
 import threading
 import pandas as pd
 from typing import Dict, List, Optional
-from persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
+from persona.persona import (
+    albwoong_persona_reply,
+    generate_structured_persona_reply,
+)
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 import chromadb
@@ -288,10 +291,87 @@ def highlight_terms(text: str) -> str:
 
     return highlighted
 
-def _fmt(header_icon: str, header_text: str, body_md: str) -> str:
-    if not body_md or not body_md.strip():
-        return ""
-    return f"{header_icon} **{header_text}**\n\n{body_md}\n"
+def _build_structured_context_from_metadata(
+    base_term: str,
+    metadata: Dict[str, str],
+    question_term: Optional[str] = None,
+    synonym_matched: bool = False,
+) -> Dict[str, str]:
+    context: Dict[str, str] = {}
+
+    def _add(key: str, value: Optional[str]):
+        if value:
+            value = str(value).strip()
+            if value:
+                context[key] = value
+
+    _add("definition", metadata.get("definition"))
+    _add("analogy", metadata.get("analogy"))
+    _add("importance", metadata.get("importance"))
+    _add("correction", metadata.get("correction"))
+    _add("example", metadata.get("example"))
+    _add("synonym", metadata.get("synonym"))
+
+    if question_term and question_term.lower() != base_term.lower():
+        label = "question_term_synonym" if synonym_matched else "question_term"
+        _add(label, question_term)
+
+    context["term"] = base_term
+    context["source"] = "RAG"
+    return context
+
+
+def _build_structured_context_from_default(term: str, info: Dict[str, str]) -> Dict[str, str]:
+    context: Dict[str, str] = {}
+
+    mapping = {
+        "definition": info.get("정의"),
+        "detail": info.get("설명"),
+        "analogy": info.get("비유"),
+    }
+
+    for key, value in mapping.items():
+        if value:
+            value = str(value).strip()
+            if value:
+                context[key] = value
+
+    context["term"] = term
+    context["source"] = "DEFAULT_DICTIONARY"
+    return context
+
+
+def _generate_structured_term_response(
+    base_term: str,
+    context: Dict[str, str],
+    question_term: Optional[str] = None,
+    temperature: float = 0.25,
+) -> str:
+    question_text = question_term or base_term
+    user_prompt = f"{question_text}가 뭐야?"
+    response = generate_structured_persona_reply(
+        user_input=user_prompt,
+        term=base_term,
+        context=context,
+        temperature=temperature,
+    )
+    if response and "(LLM 연결 오류" not in response:
+        return response
+
+    # LLM 호출 실패 시 간단한 정보라도 제공
+    parts: List[str] = [f"🤖 **{base_term}** 에 대해 설명해줄게! 🎯"]
+    if context.get("definition"):
+        parts.append(f"📖 정의: {context['definition']}")
+    if context.get("detail"):
+        parts.append(f"💡 설명: {context['detail']}")
+    if context.get("importance"):
+        parts.append(f"❗ 왜 중요해?: {context['importance']}")
+    if context.get("analogy"):
+        parts.append(f"🌟 비유: {context['analogy']}")
+    if context.get("example"):
+        parts.append(f"📰 예시: {context['example']}")
+    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
+    return "\n".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -907,31 +987,17 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
                     response = cache.get(cache_key)
 
                     if response is None:
-                        parts: List[str] = []
-                        parts.append(f"🤖 **{base_term}** 에 대해 설명해줄게! 🎯\n")
-
-                        if definition:
-                            out = albwoong_persona_rewrite_section(definition, "정의", term=base_term, max_sentences=2)
-                            parts.append(_fmt("📖", "정의", out))
-
-                        if analogy:
-                            out = albwoong_persona_rewrite_section(analogy, "비유로 이해하기", term=base_term, max_sentences=2)
-                            parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-                        if importance:
-                            out = albwoong_persona_rewrite_section(importance, "왜 중요할까?", term=base_term, max_sentences=2)
-                            parts.append(_fmt("❗", "왜 중요할까?", out))
-
-                        if correction:
-                            out = albwoong_persona_rewrite_section(correction, "흔한 오해", term=base_term, max_sentences=2)
-                            parts.append(_fmt("⚠️", "흔한 오해", out))
-
-                        if example:
-                            out = albwoong_persona_rewrite_section(example, "예시", term=base_term, max_sentences=2)
-                            parts.append(_fmt("📰", "예시", out))
-
-                        parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-                        response = "\n".join([p for p in parts if p])
+                        structured_context = _build_structured_context_from_metadata(
+                            base_term=base_term,
+                            metadata=metadata,
+                            question_term=term,
+                            synonym_matched=synonym_matched,
+                        )
+                        response = _generate_structured_term_response(
+                            base_term=base_term,
+                            context=structured_context,
+                            question_term=term,
+                        )
                         cache[cache_key] = response
 
                     if return_rag_info:
@@ -957,23 +1023,12 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
         return message
 
     info = terms[term]
-    parts: List[str] = []
-    parts.append(f"🤖 **{term}** 에 대해 설명해줄게! 🎯\n")
-
-    if info.get("정의"):
-        out = albwoong_persona_rewrite_section(info["정의"], "정의", term=term, max_sentences=2)
-        parts.append(_fmt("📖", "정의", out))
-
-    if info.get("비유"):
-        out = albwoong_persona_rewrite_section(info["비유"], "비유로 이해하기", term=term, max_sentences=2)
-        parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-    if info.get("설명"):
-        out = albwoong_persona_rewrite_section(info["설명"], "쉬운 설명", term=term, max_sentences=2)
-        parts.append(_fmt("💡", "쉬운 설명", out))
-
-    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-    response = "\n".join([p for p in parts if p])
+    structured_context = _build_structured_context_from_default(term, info)
+    response = _generate_structured_term_response(
+        base_term=term,
+        context=structured_context,
+        question_term=term,
+    )
 
     if return_rag_info:
         return response, None
