@@ -570,7 +570,7 @@ def validate_albwoong_response(response: str) -> Dict[str, Any]:
     if risky_advice:
         issues.append(f"투자 조언 금지 표현 감지: {', '.join(risky_advice)}")
         score -= 30
-        suggestions.append("'이건 정보 제공이야. 실제 투자는 전문가와 상담해봐' 추가")
+        suggestions.append("'알부엉은 투자 상담은 하지 않아. 실제 투자는 전문가와 상담해봐' 추가")
     
     # 최종 점수 보정
     score = max(0, min(100, score))
