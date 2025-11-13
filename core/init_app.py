@@ -19,14 +19,13 @@ def init_app():
             init_session_and_user()
             st.session_state["user_initialized"] = True
 
-    # ✅ 2. 금융 용어 사전 초기화
-    # ✅ 최적화: ensure_financial_terms() 내부에서 RAG 초기화
-    # RAG 시스템의 무거운 부분(임베딩 모델, ChromaDB 등)은 @st.cache_resource로 캐싱되어
-    # 각 세션에서 호출해도 첫 실행 이후에는 빠르게 완료됨
+    # ✅ 2. 금융 용어 사전 초기화 (Lazy Loading + 백그라운드 로딩)
+    # ✅ 최적화: 텍스트 사전만 빠르게 로드 (0.1초) → 즉시 UI 표시
+    # ✅ 최적화: RAG 시스템은 백그라운드에서 로드 → 사용자는 기다리지 않음
     if not st.session_state.get("terms_initialized", False):
-        with st.spinner("📚 금융 용어 사전 초기화 중..."):
-            ensure_financial_terms()
-            st.session_state["terms_initialized"] = True
+        # 텍스트 사전만 빠르게 로드 (스피너 없이 즉시 완료)
+        ensure_financial_terms()
+        st.session_state["terms_initialized"] = True
 
     # ✅ 2.5. 서버 연결 시 자동으로 UUID로 교체 및 세션 생성 (지연 실행)
     # ✅ 최적화: 이미 연결되었으면 스킵

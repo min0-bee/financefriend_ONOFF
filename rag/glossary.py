@@ -152,23 +152,110 @@ def _sync_supabase_async(documents, embeddings, metadatas, ids, checksum):
 # - Streamlit은 사용자별 세션 상태(st.session_state)를 제공
 # - 최초 1회만 DEFAULT_TERMS를 복사해 넣어 중간 변경에도 원본 보존
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# ⚡ 빠른 텍스트 사전 로드 (CSV에서 텍스트만 추출)
+# ─────────────────────────────────────────────────────────────
+def load_text_glossary_fast() -> Dict[str, Dict[str, str]]:
+    """
+    CSV에서 텍스트 사전만 빠르게 로드 (임베딩 없이)
+    - 하이라이트와 기본 설명에 사용
+    - 매우 빠름 (~0.1초)
+    """
+    terms_dict = {}
+    
+    try:
+        csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
+        if not os.path.exists(csv_path):
+            return DEFAULT_TERMS.copy()
+        
+        df = pd.read_csv(csv_path, encoding="utf-8")
+        df = df.fillna("")
+        
+        for _, row in df.iterrows():
+            term = str(row.get("금융용어", "")).strip()
+            if not term:
+                continue
+            
+            terms_dict[term] = {
+                "정의": str(row.get("정의", "")).strip(),
+                "비유": str(row.get("비유", "")).strip(),
+                "설명": str(row.get("정의", "")).strip(),  # 기본 설명
+                "유의어": str(row.get("유의어", "")).strip(),
+                "왜 중요?": str(row.get("왜 중요?", "")).strip(),
+                "오해 교정": str(row.get("오해 교정", "")).strip(),
+                "예시": str(row.get("예시", "")).strip(),
+            }
+    except Exception as e:
+        # CSV 로드 실패 시 기본 사전 사용
+        pass
+    
+    # 기본 사전과 병합 (기본 사전이 우선)
+    result = DEFAULT_TERMS.copy()
+    result.update(terms_dict)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔄 백그라운드에서 RAG 시스템 초기화
+# ─────────────────────────────────────────────────────────────
+def initialize_rag_system_background():
+    """
+    백그라운드 스레드에서 RAG 시스템 초기화
+    - UI를 블로킹하지 않음
+    - 초기화 완료 후 자동으로 활성화
+    """
+    if st.session_state.get("rag_initialized", False):
+        return
+    
+    if st.session_state.get("rag_loading", False):
+        return  # 이미 로딩 중
+    
+    if not _RAG_AVAILABLE:
+        st.session_state.rag_initialized = False
+        return
+    
+    def _load_in_background():
+        """백그라운드에서 실행되는 실제 로딩 함수"""
+        try:
+            st.session_state["rag_loading"] = True
+            st.session_state["rag_error"] = None
+            
+            # RAG 시스템 초기화 (백그라운드 모드로 실행)
+            initialize_rag_system(is_background=True)
+            
+            st.session_state["rag_loading"] = False
+        except Exception as e:
+            st.session_state["rag_loading"] = False
+            st.session_state["rag_error"] = str(e)
+    
+    # 백그라운드 스레드 시작
+    thread = threading.Thread(target=_load_in_background, daemon=True)
+    thread.start()
+
+
 def ensure_financial_terms():
     """
-    금융 용어 사전 초기화 및 RAG 시스템 자동 시작
-    - 세션 최초 실행 시 RAG 시스템을 초기화
+    금융 용어 사전 초기화 (Lazy Loading + 백그라운드 로딩)
+    
+    ✅ 최적화: 텍스트 사전만 먼저 로드 (0.1초) → 즉시 UI 표시
+    ✅ 최적화: RAG 시스템은 백그라운드에서 로드 → 사용자는 기다리지 않음
+    
+    - 세션 최초 실행 시 텍스트 사전만 빠르게 로드
+    - RAG 시스템은 백그라운드에서 초기화
     - Fallback으로 기본 용어 사전도 유지
     """
-    # 1️⃣ 기본 용어 사전 초기화 (Fallback용) - 세션별로 실행 필요
+    # 1️⃣ 텍스트 사전 빠르게 로드 (즉시 UI 표시 가능)
     if "financial_terms" not in st.session_state:
-        st.session_state.financial_terms = DEFAULT_TERMS.copy()
+        st.session_state.financial_terms = load_text_glossary_fast()
+        st.session_state["terms_text_ready"] = True
 
-    # 2️⃣ RAG 시스템 자동 초기화 (최초 1회만)
-    if "rag_initialized" not in st.session_state:
+    # 2️⃣ RAG 시스템 백그라운드 초기화 (UI 블로킹 없음)
+    if "rag_initialized" not in st.session_state and "rag_loading" not in st.session_state:
         if not _RAG_AVAILABLE:
             st.session_state.rag_initialized = False
-            st.warning("⚠️ 고급 용어 검색 모듈이 설치되지 않아 기본 사전을 사용합니다.")
         else:
-            initialize_rag_system()
+            # 백그라운드에서 초기화 시작
+            initialize_rag_system_background()
 
 
 
@@ -656,32 +743,53 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
         return None
     
     try:
-        # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         bucket_name = "glossary-cache"
-        storage_path = f"embeddings/{checksum}.pkl"
-
+        storage_path = None
         
+        # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         try:
-            # 메타데이터 확인 (있으면 체크섬 검증)
             result = supabase.table("glossary_embeddings").select("*").eq("checksum", checksum).execute()
             if result.data and len(result.data) > 0:
                 # 메타데이터가 있으면 해당 경로 사용
                 metadata = result.data[0]
-                storage_path = metadata.get("storage_path", storage_path)
-
+                storage_path = metadata.get("storage_path")
         except:
             # 테이블이 없어도 Storage에서 직접 확인
             pass
         
-
-        # 2. Storage에서 다운로드
-        response = supabase.storage.from_(bucket_name).download(storage_path)
+        # 2. Storage에서 다운로드 시도 (.pkl.gz 우선, .pkl fallback)
+        if not storage_path:
+            # 메타데이터가 없으면 직접 경로 시도
+            storage_paths = [
+                f"embeddings/{checksum}.pkl.gz",  # 압축된 파일 우선
+                f"embeddings/{checksum}.pkl"      # 압축 안 된 파일 fallback
+            ]
+        else:
+            storage_paths = [storage_path]
+        
+        response = None
+        is_gzipped = False
+        
+        for path in storage_paths:
+            try:
+                response = supabase.storage.from_(bucket_name).download(path)
+                if response:
+                    is_gzipped = path.endswith('.gz')
+                    break
+            except:
+                continue
         
         if not response:
             return None
         
-        # 3. pickle로 역직렬화
-        return pickle.loads(response)
+        # 3. gzip 압축 해제 (필요한 경우)
+        if is_gzipped:
+            decompressed_data = gzip.decompress(response)
+            cache_data = pickle.loads(decompressed_data)
+        else:
+            cache_data = pickle.loads(response)
+        
+        return cache_data
 
     
     except Exception as e:
@@ -695,27 +803,19 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
 def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
     """
     임베딩 벡터 로드 (하이브리드 방식)
-
+    
+    ✅ 최적화: Supabase Storage를 우선 확인 (이미 올라가 있으면 빠르게 로드)
+    
     우선순위:
-    1. 로컬 캐시 파일 (빠른 로컬 접근)
-    2. Supabase Storage (원격 저장소)
+    1. Supabase Storage (원격 저장소, 이미 올라가 있으면 즉시 사용)
+    2. 로컬 캐시 파일 (빠른 로컬 접근, Supabase 실패 시)
     3. None (새로 생성 필요)
     """
-    cached_data = _load_embeddings_cache(checksum)
-    if cached_data:
-        st.session_state["rag_cache_source"] = "local"
-        _sync_supabase_async(
-            cached_data['documents'],
-            cached_data['embeddings'],
-            cached_data['metadatas'],
-            cached_data['ids'],
-            checksum
-        )
-        return cached_data
-
+    # ✅ 1순위: Supabase Storage (이미 올라가 있으면 우선 사용)
     cached_data = _load_embeddings_from_supabase(checksum)
     if cached_data:
         st.session_state["rag_cache_source"] = "supabase"
+        # 로컬 캐시에도 저장하여 다음에는 더 빠르게 접근
         try:
             _save_embeddings_cache(
                 cached_data['documents'],
@@ -728,7 +828,22 @@ def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
         except:
             pass
         return cached_data
+    
+    # ✅ 2순위: 로컬 캐시 파일 (Supabase 실패 시)
+    cached_data = _load_embeddings_cache(checksum)
+    if cached_data:
+        st.session_state["rag_cache_source"] = "local"
+        # 백그라운드에서 Supabase에 동기화 (다음에는 Supabase에서 빠르게 로드)
+        _sync_supabase_async(
+            cached_data['documents'],
+            cached_data['embeddings'],
+            cached_data['metadatas'],
+            cached_data['ids'],
+            checksum
+        )
+        return cached_data
 
+    # ✅ 3순위: 없음 (새로 생성 필요)
     st.session_state["rag_cache_source"] = "none"
     return None
 
@@ -740,12 +855,29 @@ def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
 # - ChromaDB: persistent 모드로 디스크에 저장 (세션 간 유지)
 # - CSV 체크섬: 파일 변경 감지하여 자동 재임베딩
 # ─────────────────────────────────────────────────────────────
-def initialize_rag_system():
-    """RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (하이브리드 캐시)"""
+def initialize_rag_system(is_background: bool = False):
+    """
+    RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (하이브리드 캐시)
+    
+    Args:
+        is_background: 백그라운드 스레드에서 실행 중이면 True (st.spinner 사용 안 함)
+    """
 
     # 세션에 이미 초기화되어 있으면 스킵
     if "rag_initialized" in st.session_state and st.session_state.rag_initialized:
         return
+
+    # 백그라운드 스레드 체크
+    is_background_thread = is_background or (threading.current_thread().name != "MainThread")
+    
+    # 스피너 컨텍스트 매니저 (백그라운드에서는 no-op)
+    class _noop_context:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    
+    spinner_context = _noop_context if is_background_thread else st.spinner
 
     perf_enabled = _perf_enabled()
     perf_steps: List[Dict] = []
@@ -755,10 +887,11 @@ def initialize_rag_system():
 
     try:
         # 1️⃣ CSV 로드 및 체크섬 계산
-        with st.spinner("📄 금융용어 파일 로드 중..."):
+        with spinner_context("📄 금융용어 파일 로드 중..."):
             csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
             if not os.path.exists(csv_path):
-                st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
+                if not is_background_thread:
+                    st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
                 st.session_state.rag_initialized = False
                 return
 
@@ -770,26 +903,26 @@ def initialize_rag_system():
 
         # 2️⃣ 임베딩 모델 로드 (st.cache_resource로 캐싱)
         # 첫 실행 시 모델 로드가 매우 느리므로 항상 스피너 표시
-        with st.spinner("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
+        with spinner_context("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
             embedding_model = _get_embedding_model()
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "model_ready", step_start)
 
         # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드, st.cache_resource로 캐싱)
-        with st.spinner("💾 벡터 데이터베이스 초기화 중..."):
+        with spinner_context("💾 벡터 데이터베이스 초기화 중..."):
             chroma_client = _get_chroma_client()
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "chroma_client", step_start)
 
         # 4️⃣ 하이브리드 방식으로 임베딩 로드 시도 (Supabase 우선, 로컬 Fallback)
-        with st.spinner("🔄 임베딩 벡터 로드 중..."):
+        with spinner_context("🔄 임베딩 벡터 로드 중..."):
             cached_data = _load_embeddings_with_fallback(csv_checksum)
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "cache_lookup", step_start)
 
         # 5️⃣ 컬렉션 가져오기 또는 생성
         collection_name = "financial_terms"
-        with st.spinner("🔍 벡터 컬렉션 확인 중..."):
+        with spinner_context("🔍 벡터 컬렉션 확인 중..."):
             try:
                 collection = chroma_client.get_collection(name=collection_name)
                 if collection.count() > 0 and cached_data is not None:
@@ -810,8 +943,9 @@ def initialize_rag_system():
                         _record_perf("initialize", perf_steps)
                         perf_logged = True
 
-                    cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
-                    st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
+                    if not is_background_thread:
+                        cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+                        st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
                     return
                 elif cached_data is None:
                     try:
@@ -831,7 +965,7 @@ def initialize_rag_system():
             step_start = _perf_step(perf_enabled, perf_steps, "collection_ready", step_start)
 
         if cached_data is not None:
-            with st.spinner("📦 캐시된 데이터 준비 중..."):
+            with spinner_context("📦 캐시된 데이터 준비 중..."):
                 documents = cached_data['documents']
                 embeddings = cached_data['embeddings']
                 metadatas = cached_data['metadatas']
@@ -848,7 +982,7 @@ def initialize_rag_system():
                 step_start = _perf_step(perf_enabled, perf_steps, "cache_materialize", step_start)
             _cache_rag_metadata(metadatas)
         else:
-            with st.spinner("📝 금융용어 데이터 준비 중..."):
+            with spinner_context("📝 금융용어 데이터 준비 중..."):
                 documents = []
                 metadatas = []
                 ids = []
@@ -886,7 +1020,7 @@ def initialize_rag_system():
             if perf_enabled:
                 step_start = _perf_step(perf_enabled, perf_steps, "documents_prepared", step_start)
 
-            with st.spinner(f"🔄 {len(documents)}개 금융용어 벡터화 중..."):
+            with spinner_context(f"🔄 {len(documents)}개 금융용어 벡터화 중..."):
                 embeddings = embedding_model.encode(documents, show_progress_bar=False)
             if perf_enabled:
                 step_start = _perf_step(perf_enabled, perf_steps, "embedding_encode", step_start)
@@ -900,7 +1034,7 @@ def initialize_rag_system():
             if perf_enabled:
                 step_start = _perf_step(perf_enabled, perf_steps, "collection_populate", step_start)
 
-            with st.spinner("💾 임베딩 벡터 저장 중..."):
+            with spinner_context("💾 임베딩 벡터 저장 중..."):
                 _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
                 st.session_state["rag_cache_synced"] = False
             if perf_enabled:
@@ -921,15 +1055,18 @@ def initialize_rag_system():
             _record_perf("initialize", perf_steps)
             perf_logged = True
 
-        if cached_data is not None:
-            cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
-            st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
-        else:
-            save_source = "Supabase + 로컬" if SUPABASE_ENABLE else "로컬"
-            st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, {save_source}에 저장됨)")
+        # 백그라운드 스레드에서는 UI 메시지 표시 안 함
+        if not is_background_thread:
+            if cached_data is not None:
+                cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+                st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
+            else:
+                save_source = "Supabase + 로컬" if SUPABASE_ENABLE else "로컬"
+                st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, {save_source}에 저장됨)")
 
     except Exception as e:
-        st.error(f"❌ RAG 초기화 실패: {e}")
+        if not is_background_thread:
+            st.error(f"❌ RAG 초기화 실패: {e}")
         st.session_state.rag_initialized = False
     finally:
         if perf_enabled and not perf_logged:
