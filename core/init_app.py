@@ -1,7 +1,7 @@
 # === 부트스트랩 인라인 ===
 from core.user import init_session_and_user
 from core.logger import log_event, _ensure_backend_user, _ensure_backend_session
-from data.news import collect_news
+from data.news import load_news_cached
 from rag.glossary import ensure_financial_terms
 from core.config import API_ENABLE
 import streamlit as st
@@ -11,19 +11,18 @@ def init_app():
     """
     앱 초기화 함수
     ✅ 최적화: 각 단계별로 완료 여부를 체크하여 불필요한 재실행 방지
+    ✅ 최적화: 서버 전체 캐싱으로 첫 접속 시 성능 개선
     """
-    # 이미 초기화되었으면 스킵
-    if st.session_state.get("app_initialized", False):
-        return
-
     # ✅ 1. 세션 및 사용자 초기화 (user_id, session_id 생성 등)
     if not st.session_state.get("user_initialized", False):
         with st.spinner("👤 사용자 세션 초기화 중..."):
             init_session_and_user()
             st.session_state["user_initialized"] = True
 
-    # ✅ 2. 금융 용어 사전 초기화 (없으면 기본 사전 로드)
-    # ✅ 최적화: 이미 초기화되었으면 스킵
+    # ✅ 2. 금융 용어 사전 초기화
+    # ✅ 최적화: ensure_financial_terms() 내부에서 RAG 초기화
+    # RAG 시스템의 무거운 부분(임베딩 모델, ChromaDB 등)은 @st.cache_resource로 캐싱되어
+    # 각 세션에서 호출해도 첫 실행 이후에는 빠르게 완료됨
     if not st.session_state.get("terms_initialized", False):
         with st.spinner("📚 금융 용어 사전 초기화 중..."):
             ensure_financial_terms()
@@ -54,10 +53,11 @@ def init_app():
     st.session_state.setdefault("detail_enter_logged", False)
     st.session_state.setdefault("news_articles", [])
 
-    # ✅ 4. 뉴스 데이터 수집 (처음 실행 시만, st.cache_data로 캐싱됨)
+    # ✅ 4. 뉴스 데이터 수집 (처음 실행 시만 + 프로세스 캐시)
+    # ✅ 최적화: st.cache_data로 서버 기준 5분 동안 모든 세션이 공유
     if not st.session_state.news_articles:
         with st.spinner("📰 최신 뉴스를 수집하는 중..."):
-            st.session_state.news_articles = collect_news() or []
+            st.session_state.news_articles = load_news_cached()
 
     # ✅ 5. 세션 시작 이벤트 로그 (한 세션에 한 번만 기록)
     if not st.session_state.get("session_logged", False):
@@ -70,7 +70,4 @@ def init_app():
             }
         )
         st.session_state.session_logged = True
-
-    # ✅ 초기화 완료 플래그
-    st.session_state.app_initialized = True
 
