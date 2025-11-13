@@ -4,6 +4,7 @@ import csv
 import uuid
 import json
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
 import streamlit as st
@@ -1649,17 +1650,10 @@ def _log_to_event_log(event_name: str, **kwargs) -> Tuple[bool, Optional[str]]:
 # 기존 로깅 함수 (CSV + API + event_log)
 # ─────────────────────────────────────────────────────────────
 
-def log_event(event_name: str, **kwargs):
+def _log_event_sync(event_name: str, **kwargs):
     """
-    로깅 함수 (서버 중심 모드)
-    --------------------------------------------------------
-    ✅ 역할:
-        - 사용자의 행동(이벤트)을 서버 API로 기록합니다.
-        - CSV는 선택적으로 저장 (CSV_ENABLE=True일 때만)
-        - 예: 뉴스 클릭, 용어 클릭, 챗봇 질문 등
-    --------------------------------------------------------
+    로깅 함수의 동기 실행 부분 (CSV 저장 등)
     """
-
     # CSV 저장 (선택적 - 서버 중심 모드에서는 비활성화)
     if CSV_ENABLE:
         ensure_log_file()
@@ -1707,7 +1701,12 @@ def log_event(event_name: str, **kwargs):
                 extrasaction="ignore"
             )
             writer.writerow(row)
-    
+
+
+def _log_event_async(event_name: str, **kwargs):
+    """
+    로깅 함수의 비동기 실행 부분 (Supabase, API 호출 등)
+    """
     # 🎯 대화 관련 이벤트는 dialogue 생성이 필요하므로 먼저 처리
     # (dialogue_id가 생성된 후 event_log에 기록되어야 함)
     dialogue_events = ("chat_question", "chat_answer", "chat_response", "glossary_answer", "glossary_click")
@@ -1729,8 +1728,12 @@ def log_event(event_name: str, **kwargs):
     
     # 🎯 event_log에 직접 기록 (로그 중심 DB - 우선순위 1)
     if SUPABASE_ENABLE:
-        event_log_success, event_log_error = _log_to_event_log(event_name, **kwargs)
-        # event_log 기록 실패해도 계속 진행 (다른 방식으로 기록 시도)
+        try:
+            event_log_success, event_log_error = _log_to_event_log(event_name, **kwargs)
+            # event_log 기록 실패해도 계속 진행 (다른 방식으로 기록 시도)
+        except Exception as e:
+            # 비동기 실행 중 에러는 조용히 처리
+            pass
     
     # API로 전송 (서비스 DB - 선택적, 기존 호환성 유지)
     if API_ENABLE and REQUESTS_AVAILABLE:
@@ -1767,16 +1770,35 @@ def log_event(event_name: str, **kwargs):
                     "failed_events": []
                 }
             st.session_state["api_send_status"]["failed"] += 1
-            failed_events = st.session_state["api_send_status"]["failed_events"]
-            failed_events.append({
-                "event": event_name,
-                "error": str(e),
-                "time": now_utc_iso()
-            })
-            if len(failed_events) > 10:
-                failed_events.pop(0)
-            if API_SHOW_ERRORS:
-                st.error(f"❌ API 전송 실패 ({event_name}): {str(e)}")
+
+
+def log_event(event_name: str, **kwargs):
+    """
+    로깅 함수 (서버 중심 모드, 비동기 최적화)
+    --------------------------------------------------------
+    ✅ 역할:
+        - 사용자의 행동(이벤트)을 서버 API로 기록합니다.
+        - CSV는 동기적으로 저장 (CSV_ENABLE=True일 때만)
+        - Supabase/API 호출은 비동기로 실행하여 UI 블로킹 방지
+        - 예: 뉴스 클릭, 용어 클릭, 챗봇 질문 등
+    --------------------------------------------------------
+    """
+    # CSV 저장은 동기적으로 실행 (빠른 로컬 파일 I/O)
+    _log_event_sync(event_name, **kwargs)
+    
+    # ✅ 성능 개선: Supabase/API 호출은 비동기로 실행 (UI 블로킹 방지)
+    # kwargs를 딥카피하여 스레드 안전성 보장
+    import copy
+    kwargs_copy = copy.deepcopy(kwargs)
+    
+    # 백그라운드 스레드에서 실행
+    thread = threading.Thread(
+        target=_log_event_async,
+        args=(event_name,),
+        kwargs=kwargs_copy,
+        daemon=True
+    )
+    thread.start()
 
 
 def _parse_message(message: str) -> str:

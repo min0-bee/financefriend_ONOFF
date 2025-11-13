@@ -1,5 +1,7 @@
 
 import streamlit as st
+import hashlib
+import json
 from core.utils import llm_chat
 from core.config import DEFAULT_OPENAI_MODEL, DEFAULT_NEWS_SUMMARY_PROMPT
 
@@ -48,6 +50,26 @@ def _build_fallback_summary(articles):
     return "\n".join(bullets)
 
 
+def _get_articles_hash(articles):
+    """뉴스 목록의 해시를 계산하여 변경 여부 확인 (최적화)"""
+    if not articles:
+        return ""
+    
+    # ✅ 성능 개선: 상위 5개 기사의 ID만으로 해시 생성 (더 빠름)
+    # ID가 변경되면 뉴스가 변경된 것으로 간주
+    tops = articles[:5]
+    article_ids = []
+    for item in tops:
+        if isinstance(item, dict):
+            article_id = item.get("id")
+            if article_id:
+                article_ids.append(str(article_id))
+    
+    # ID 리스트를 문자열로 변환 후 해시 계산 (JSON 직렬화보다 빠름)
+    ids_string = ",".join(sorted(article_ids))
+    return hashlib.md5(ids_string.encode('utf-8')).hexdigest()
+
+
 def render(articles, use_openai: bool = False):
     if isinstance(articles, (str, bytes)):
         articles = [articles]
@@ -59,23 +81,41 @@ def render(articles, use_openai: bool = False):
 
     if use_openai and articles:
         tops = articles[:5]
-        articles_context = _format_articles_for_prompt(tops)
-        prompt_template = st.session_state.get("news_summary_prompt", DEFAULT_NEWS_SUMMARY_PROMPT)
-        user_prompt = prompt_template.format(articles=articles_context)
+        
+        # ✅ 성능 개선: 뉴스 목록 해시 계산하여 변경 여부 확인
+        current_hash = _get_articles_hash(articles)
+        cached_hash = st.session_state.get("news_summary_hash")
+        cached_summary = st.session_state.get("news_summary_cached")
+        
+        # 캐시가 있고 뉴스가 변경되지 않았으면 캐시된 요약 사용
+        if cached_summary and cached_hash == current_hash:
+            summary = cached_summary
+            st.caption("💾 캐시된 요약 (뉴스가 변경되지 않아 재요약하지 않음)")
+        else:
+            # 뉴스가 변경되었거나 캐시가 없으면 재요약
+            articles_context = _format_articles_for_prompt(tops)
+            prompt_template = st.session_state.get("news_summary_prompt", DEFAULT_NEWS_SUMMARY_PROMPT)
+            user_prompt = prompt_template.format(articles=articles_context)
 
-        sys = {
-            "role": "system",
-            "content": "너는 초보자에게 금융 시장 이슈를 정확하고 쉽게 요약하는 금융 전문 기자야."
-        }
-        usr = {"role": "user", "content": user_prompt}
-        try:
-            summary = llm_chat([sys, usr], max_tokens=280, temperature=0.4)
-        except Exception as e:
-            summary = (
-                f"요약 생성 중 오류가 발생했습니다: {e}\n"
-                "아래는 최근 기사 목록을 간단히 나열한 정보입니다.\n"
-                + _build_fallback_summary(tops)
-            )
+            sys = {
+                "role": "system",
+                "content": "너는 초보자에게 금융 시장 이슈를 정확하고 쉽게 요약하는 금융 전문 기자야."
+            }
+            usr = {"role": "user", "content": user_prompt}
+            try:
+                # ✅ 성능 개선: OpenAI API 호출 중 스피너 표시
+                with st.spinner("🤖 AI가 뉴스를 요약하고 있습니다..."):
+                    summary = llm_chat([sys, usr], max_tokens=280, temperature=0.4)
+                
+                # ✅ 성능 개선: 요약 결과를 캐시에 저장
+                st.session_state["news_summary_hash"] = current_hash
+                st.session_state["news_summary_cached"] = summary
+            except Exception as e:
+                summary = (
+                    f"요약 생성 중 오류가 발생했습니다: {e}\n"
+                    "아래는 최근 기사 목록을 간단히 나열한 정보입니다.\n"
+                    + _build_fallback_summary(tops)
+                )
     else:
         summary = _build_fallback_summary(articles[:5])
 

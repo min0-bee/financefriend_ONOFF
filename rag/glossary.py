@@ -14,7 +14,7 @@ import os
 import time
 import threading
 import pandas as pd
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from persona.persona import (
     albwoong_persona_reply,
     generate_structured_persona_reply,
@@ -209,16 +209,33 @@ def ensure_financial_terms():
 # - data-term 속성: 추후 JS/이벤트 연결 시 어떤 용어인지 식별 용이
 # - Streamlit 출력 시 st.markdown(..., unsafe_allow_html=True) 필요
 # ─────────────────────────────────────────────────────────────
-def highlight_terms(text: str) -> str:
+def highlight_terms(text: str, article_id: Optional[str] = None, return_matched_terms: bool = False) -> Union[str, tuple[str, set[str]]]:
     """
-    기사 본문에서 금융 용어를 찾아 하이라이트 처리
+    기사 본문에서 금융 용어를 찾아 하이라이트 처리 (캐싱 지원)
 
     Args:
         text: 원본 텍스트(기사 본문 등)
+        article_id: 기사 ID (캐싱 키로 사용, None이면 캐싱 안 함)
+        return_matched_terms: True일 경우 (하이라이트된 텍스트, 발견된 용어 세트) 튜플 반환
 
     Returns:
-        금융 용어가 하이라이트 처리된 HTML 문자열
+        return_matched_terms=False: 금융 용어가 하이라이트 처리된 HTML 문자열
+        return_matched_terms=True: (하이라이트된 HTML 문자열, 발견된 용어 세트) 튜플
     """
+    # ✅ 성능 개선: 기사별 하이라이트 결과 캐싱
+    if article_id:
+        cache_key = f"highlight_cache_{article_id}"
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        cache_entry = st.session_state.get(cache_key)
+        
+        # 캐시가 있고 텍스트가 변경되지 않았으면 캐시된 결과 반환
+        if cache_entry and cache_entry.get("text_hash") == text_hash:
+            cached_highlighted = cache_entry.get("highlighted", text)
+            if return_matched_terms:
+                cached_matched_terms = cache_entry.get("matched_terms", set())
+                return cached_highlighted, cached_matched_terms
+            return cached_highlighted
+    
     highlighted = text
     terms_to_highlight = set()
 
@@ -240,38 +257,66 @@ def highlight_terms(text: str) -> str:
     else:
         terms_to_highlight = set(st.session_state.get("financial_terms", DEFAULT_TERMS).keys())
 
-    # 3️⃣ 용어별로 하이라이트 처리
-    # 긴 용어부터 처리하여 부분 매칭 방지 (예: "부가가치세"가 "부가가치"보다 먼저 처리)
-    sorted_terms = sorted(terms_to_highlight, key=len, reverse=True)
+    # ✅ 성능 개선: 정렬된 용어 목록을 세션에 캐싱 (용어 목록이 변경되지 않는 한 재사용)
+    sorted_terms_cache_key = "highlight_sorted_terms_cache"
+    sorted_terms_hash_key = "highlight_sorted_terms_hash"
+    
+    current_terms_hash = hashlib.md5(str(sorted(terms_to_highlight)).encode('utf-8')).hexdigest()
+    cached_sorted_terms = st.session_state.get(sorted_terms_cache_key)
+    cached_terms_hash = st.session_state.get(sorted_terms_hash_key)
+    
+    if cached_sorted_terms and cached_terms_hash == current_terms_hash:
+        sorted_terms = cached_sorted_terms
+    else:
+        # 긴 용어부터 처리하여 부분 매칭 방지 (예: "부가가치세"가 "부가가치"보다 먼저 처리)
+        sorted_terms = sorted(terms_to_highlight, key=len, reverse=True)
+        st.session_state[sorted_terms_cache_key] = sorted_terms
+        st.session_state[sorted_terms_hash_key] = current_terms_hash
+
+    # ✅ 성능 개선: 정규식 패턴 컴파일 캐싱
+    pattern_cache_key = "highlight_pattern_cache"
+    if pattern_cache_key not in st.session_state:
+        st.session_state[pattern_cache_key] = {}
+    pattern_cache = st.session_state[pattern_cache_key]
 
     # 이미 하이라이트된 부분을 보호하기 위한 임시 플레이스홀더 맵
     placeholders = {}
     placeholder_counter = 0
 
-    for term in sorted_terms:
-        if not term:  # 빈 문자열 스킵
-            continue
+    # ✅ 성능 개선: 빠른 사전 필터링 - 텍스트에 포함된 용어만 처리
+    text_lower = highlighted.lower()
+    terms_in_text = [term for term in sorted_terms if term and term.lower() in text_lower]
+    
+    # ✅ 성능 개선: 발견된 용어 추적 (용어 필터링 재사용을 위해)
+    matched_terms_set = set()
 
+    for term in terms_in_text:
         # 플레이스홀더가 아닌 실제 텍스트만 매칭하도록 패턴 생성
         # __PLACEHOLDER_로 시작하는 부분은 제외
         escaped_term = re.escape(term)
 
+        # ✅ 성능 개선: 정규식 패턴 캐싱
+        if escaped_term not in pattern_cache:
+            pattern_cache[escaped_term] = re.compile(escaped_term, re.IGNORECASE)
+        pattern = pattern_cache[escaped_term]
+
         # 매칭된 원래 표기를 유지하면서 하이라이트
         matches = []
-        pattern = re.compile(escaped_term, re.IGNORECASE)
-
         for match in pattern.finditer(highlighted):
             # 매칭된 위치가 플레이스홀더 안에 있는지 확인
             start_pos = match.start()
             # 매칭 위치 이전에 플레이스홀더가 있고 아직 닫히지 않았는지 체크
-            prefix = highlighted[:start_pos]
-            # 플레이스홀더 안에 있지 않은 경우만 저장
-            if '__PLACEHOLDER_' not in highlighted[max(0, start_pos-20):start_pos]:
-                matches.append(match)
+            # ✅ 성능 개선: 더 효율적인 플레이스홀더 체크
+            if start_pos > 0 and '__PLACEHOLDER_' in highlighted[max(0, start_pos-30):start_pos]:
+                continue
+            matches.append(match)
 
         # 뒤에서부터 치환 (인덱스 변경 방지)
         for match in reversed(matches):
             matched_text = match.group(0)
+            # ✅ 성능 개선: 매칭된 용어 추적
+            matched_terms_set.add(term)
+            
             # HTML 태그 생성 (Streamlit은 클릭 이벤트를 지원하지 않으므로 시각적 표시만)
             placeholder = f"__PLACEHOLDER_{placeholder_counter}__"
             mark_html = (
@@ -289,6 +334,18 @@ def highlight_terms(text: str) -> str:
     for placeholder, mark_html in placeholders.items():
         highlighted = highlighted.replace(placeholder, mark_html)
 
+    # ✅ 성능 개선: 결과를 캐시에 저장
+    if article_id:
+        st.session_state[cache_key] = {
+            "text_hash": text_hash,
+            "highlighted": highlighted,
+            "matched_terms": matched_terms_set  # 발견된 용어도 함께 캐싱
+        }
+
+    # ✅ 성능 개선: 발견된 용어 반환 (용어 필터링 재사용)
+    if return_matched_terms:
+        return highlighted, matched_terms_set
+    
     return highlighted
 
 def _build_structured_context_from_metadata(

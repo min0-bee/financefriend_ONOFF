@@ -64,8 +64,12 @@ def main():
         st.title("📰 금융 뉴스 도우미")
 
         if st.session_state.selected_article is None:
-            SummaryBox(st.session_state.news_articles, use_openai=USE_OPENAI)
+            # ✅ 성능 개선: 뉴스 목록을 먼저 렌더링 (즉시 표시)
+            # OpenAI 요약은 나중에 표시하여 초기 로딩 속도 개선
             NewsList(st.session_state.news_articles)
+            
+            # ✅ 요약 박스는 뉴스 목록 다음에 렌더링 (사용자는 이미 뉴스를 볼 수 있음)
+            SummaryBox(st.session_state.news_articles, use_openai=USE_OPENAI)
         else:
             ArticleDetail()
 
