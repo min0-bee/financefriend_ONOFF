@@ -35,13 +35,8 @@ from core.config import SUPABASE_ENABLE
 # 🚀 전역 캐시: 임베딩 모델 (세션 간 재사용)
 # - SentenceTransformer 모델은 메모리 사용량이 크므로 전역으로 캐시
 # - 모든 세션에서 동일한 모델 인스턴스 재사용
+# ✅ 최적화: st.cache_resource로 캐싱하므로 전역 변수 제거
 # ─────────────────────────────────────────────────────────────
-_embedding_model_cache = None
-
-# ─────────────────────────────────────────────────────────────
-# 🚀 전역 캐시: 임베딩 모델 (세션 간 재사용)
-# ─────────────────────────────────────────────────────────────
-_embedding_model_cache = None
 _RAG_AVAILABLE = chromadb is not None and SentenceTransformer is not None
 
 # ─────────────────────────────────────────────────────────────
@@ -468,16 +463,32 @@ def _calculate_csv_checksum(csv_path: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# 🚀 임베딩 모델 로드 (전역 캐시 사용)
+# 🚀 임베딩 모델 로드 (st.cache_resource로 캐싱)
 # ─────────────────────────────────────────────────────────────
+@st.cache_resource
 def _get_embedding_model():
-    """임베딩 모델을 전역 캐시에서 로드하거나 새로 로드"""
-    global _embedding_model_cache
-    
-    if _embedding_model_cache is None:
-        _embedding_model_cache = SentenceTransformer('jhgan/ko-sroberta-multitask')
-    
-    return _embedding_model_cache
+    """
+    임베딩 모델을 로드 (st.cache_resource로 캐싱)
+    - 한 번 로드된 모델은 세션 간 재사용
+    - 리소스(메모리, 모델 파일)를 공유하므로 cache_resource 사용
+    """
+    return SentenceTransformer('jhgan/ko-sroberta-multitask')
+
+
+@st.cache_resource
+def _get_chroma_client():
+    """
+    ChromaDB 클라이언트 생성 (st.cache_resource로 캐싱)
+    - 한 번 생성된 클라이언트는 세션 간 재사용
+    - persistent 모드로 디스크에 저장
+    """
+    chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
+    return chromadb.PersistentClient(
+        path=chroma_db_path,
+        settings=Settings(
+            anonymized_telemetry=False
+        )
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -755,24 +766,16 @@ def initialize_rag_system():
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "csv_load", step_start)
 
-        # 2️⃣ 임베딩 모델 로드 (전역 캐시 사용)
+        # 2️⃣ 임베딩 모델 로드 (st.cache_resource로 캐싱)
         # 첫 실행 시 모델 로드가 매우 느리므로 항상 스피너 표시
-        embedding_model = _get_embedding_model()
-        if embedding_model is None or _embedding_model_cache is None:
-            with st.spinner("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
-                embedding_model = _get_embedding_model()
+        with st.spinner("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
+            embedding_model = _get_embedding_model()
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "model_ready", step_start)
 
-        # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드)
+        # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드, st.cache_resource로 캐싱)
         with st.spinner("💾 벡터 데이터베이스 초기화 중..."):
-            chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
-            chroma_client = chromadb.PersistentClient(
-                path=chroma_db_path,
-                settings=Settings(
-                    anonymized_telemetry=False
-                )
-            )
+            chroma_client = _get_chroma_client()
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "chroma_client", step_start)
 

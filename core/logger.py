@@ -26,7 +26,7 @@ except ImportError:
         st.warning("⚠️ requests 라이브러리가 없습니다. pip install requests를 실행해주세요.")
 
 # Supabase 클라이언트 (event_log 중심 로깅용)
-_supabase_client = None
+# ✅ 최적화: st.cache_resource로 캐싱하므로 전역 변수 제거
 try:
     from supabase import create_client, Client
     SUPABASE_AVAILABLE = True
@@ -52,13 +52,13 @@ CSV_HEADER = [
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+@st.cache_resource
 def get_supabase_client() -> Optional[Any]:
-    """Supabase 클라이언트를 싱글톤으로 반환 (없으면 None)"""
-    global _supabase_client
-    
-    if _supabase_client is not None:
-        return _supabase_client
-    
+    """
+    Supabase 클라이언트를 생성 (st.cache_resource로 캐싱)
+    - 한 번 생성된 클라이언트는 세션 간 재사용
+    - 리소스(연결, 메모리)를 공유하므로 cache_resource 사용
+    """
     if not SUPABASE_AVAILABLE or not SUPABASE_ENABLE:
         if SUPABASE_ENABLE and not SUPABASE_AVAILABLE:
             try:
@@ -82,8 +82,7 @@ def get_supabase_client() -> Optional[Any]:
     
     try:
         from supabase import create_client
-        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        return _supabase_client
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
         # Supabase 에러는 항상 표시 (API 설정과 무관)
         if SUPABASE_ENABLE:

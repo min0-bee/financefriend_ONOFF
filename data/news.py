@@ -1,5 +1,6 @@
 from typing import List, Dict
 from datetime import datetime
+import streamlit as st
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 
@@ -111,10 +112,12 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
         return []
 
 
+@st.cache_data(ttl=300)  # 5분 캐시 (뉴스는 자주 변경되지 않음)
 def collect_news() -> List[Dict]:
     """
     Supabase DB에서 최신 뉴스 3개를 가져옵니다.
     Supabase 연결 실패 시 샘플 데이터를 반환합니다.
+    ✅ 최적화: st.cache_data로 캐싱하여 5분간 재사용
     """
     # Supabase에서 뉴스 가져오기 시도
     news_list = _fetch_news_from_supabase(limit=3)

@@ -153,7 +153,6 @@ def render():
     # ← 뒤로가기 버튼 : 목록으로
     if st.button("← 뉴스 목록으로 돌아가기"):
         # ✅ 성능 측정: 뒤로가기 처리 시간
-        import time
         back_start = time.time()
         
         if st.session_state.get("detail_enter_logged"):

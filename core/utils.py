@@ -3,6 +3,7 @@ import csv
 import json
 import uuid
 import pandas as pd
+import streamlit as st
 from datetime import datetime, timezone
 from core.config import LOG_DIR, LOG_FILE
 from openai import OpenAI
@@ -115,21 +116,16 @@ def load_logs_as_df(log_file: str) -> pd.DataFrame:
 #   (4)  --- OpenAI: 클라이언트 & 호출 헬퍼 ---
 # ─────────────────────────────────────────────────────────────
 
-_openai_client = None
-
+@st.cache_resource
 def get_openai_client(api_key: str = None):
     """
-    OpenAI Python SDK v1.x 클라이언트 생성 (싱글톤)
+    OpenAI Python SDK v1.x 클라이언트 생성 (st.cache_resource로 캐싱)
+    - 한 번 생성된 클라이언트는 세션 간 재사용
     - 환경변수/Streamlit secrets에서 키를 찾고, 없으면 None 반환
     """
-    global _openai_client
-    if _openai_client is not None:
-        return _openai_client
-
     # 1) 우선순위: 전달 인자 → 환경변수 → st.secrets
     key = api_key or os.getenv("OPENAI_API_KEY")
     try:
-        import streamlit as st
         if not key and "OPENAI_API_KEY" in st.secrets:
             key = st.secrets["OPENAI_API_KEY"]
     except Exception:
@@ -140,8 +136,7 @@ def get_openai_client(api_key: str = None):
         return None
 
     # 3) 정상 생성
-    _openai_client = OpenAI(api_key=key)
-    return _openai_client
+    return OpenAI(api_key=key)
 
 
 def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: int = 512, return_metadata: bool = False):
