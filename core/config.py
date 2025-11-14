@@ -67,6 +67,30 @@ if not SUPABASE_KEY:
 # 익명 사용자 UUID (디폴트)
 ANONYMOUS_USER_ID = "00000000-0000-0000-0000-000000000000"
 
+# 관리자 user_id 목록 (로그 뷰어 접근 권한)
+ADMIN_USER_IDS = [
+    "24b94780-ed73-47a9-9198-2b7a886cd470",  # 관리자 추가됨
+]
+
+# Streamlit Secrets에서 관리자 목록 가져오기
+try:
+    import streamlit as st
+    if "ADMIN_USER_IDS" in st.secrets:
+        admin_list = st.secrets.get("ADMIN_USER_IDS")
+        if isinstance(admin_list, list):
+            ADMIN_USER_IDS = admin_list
+        elif isinstance(admin_list, str):
+            # 쉼표로 구분된 문자열인 경우
+            ADMIN_USER_IDS = [uid.strip() for uid in admin_list.split(",") if uid.strip()]
+except Exception:
+    pass
+
+# 환경변수에서도 확인 (로컬 개발용, 쉼표로 구분)
+if not ADMIN_USER_IDS:
+    admin_env = os.getenv("ADMIN_USER_IDS")
+    if admin_env:
+        ADMIN_USER_IDS = [uid.strip() for uid in admin_env.split(",") if uid.strip()]
+
 # 에이전트 매핑 (via → agent_id)
 AGENT_ID_MAPPING = {
     "openai": 1,

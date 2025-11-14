@@ -587,7 +587,19 @@ def _fill_sessions_from_time(
 def render():
     """
     서버에서 데이터를 가져와서 로그 뷰어 렌더링
+    
+    ⚠️ 관리자 권한이 필요합니다.
     """
+    # 관리자 권한 체크
+    from core.user import is_admin_user
+    from core.logger import _get_user_id
+    
+    current_user_id = _get_user_id()
+    if not is_admin_user(current_user_id):
+        st.error("⚠️ 접근 권한이 없습니다. 로그 뷰어는 관리자만 접근할 수 있습니다.")
+        st.info("💡 관리자 계정으로 접속하거나 관리자에게 문의하세요.")
+        return
+    
     st.markdown("## 📊 로그 뷰어")
 
     # event_log 중심 모드 (Supabase에서 직접 가져오기)
