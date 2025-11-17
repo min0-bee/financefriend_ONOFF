@@ -34,16 +34,49 @@ def main():
     from ui.components.sidebar import render as Sidebar
     from ui.components.log_viewer_server import render as LogViewer
     
-    # ① 전역 스타일 & 세션 초기화 (공통 환경 구성)
+    # ① 전역 스타일 & 세션 초기화 (공통 환경 구성) - 즉시 실행 (블로킹 없음)
     inject_styles()
     
-    # ② 앱 초기화 (뉴스 먼저 로드)
-    init_app()
+    # ② 최소한의 앱 초기화 (뉴스 로드는 백그라운드로)
+    from core.user import init_session_and_user
     
-    # ③ 로그 기록 및 백그라운드 초기화 (뉴스 표시 후 실행)
+    # 세션 및 사용자 초기화만 먼저 (빠름, 블로킹 없음)
+    if not st.session_state.get("user_initialized", False):
+        init_session_and_user()
+        st.session_state["user_initialized"] = True
+    
+    # 세션 상태 기본값 설정 (빠름)
+    st.session_state.setdefault("selected_article", None)
+    st.session_state.setdefault("chat_history", [])
+    st.session_state.setdefault("term_click_count", 0)
+    st.session_state.setdefault("news_click_count", 0)
+    st.session_state.setdefault("chat_count", 0)
+    st.session_state.setdefault("detail_enter_logged", False)
+    st.session_state.setdefault("news_articles", [])
+    
+    # ③ 뉴스 로드 및 백그라운드 초기화 (비동기로 실행)
     import threading
     from core.init_app import init_app_background
     from core.logger import log_event
+    from data.news import load_news_cached, FALLBACK_NEWS
+    
+    # 뉴스 데이터가 없으면 백그라운드에서 로드 (UI 블로킹 방지)
+    if not st.session_state.news_articles and not st.session_state.get("news_loading", False):
+        st.session_state["news_loading"] = True
+        def _load_news_async():
+            try:
+                news = load_news_cached()
+                if news:
+                    st.session_state.news_articles = news
+            except Exception:
+                # 에러 발생 시 Fallback 데이터 사용
+                st.session_state.news_articles = FALLBACK_NEWS
+            finally:
+                st.session_state["news_loading"] = False
+        threading.Thread(target=_load_news_async, daemon=True).start()
+        # 뉴스 로딩 중에는 Fallback 데이터 표시
+        if not st.session_state.news_articles:
+            st.session_state.news_articles = FALLBACK_NEWS
     
     # 세션 시작 로그는 뉴스 표시 후에 기록
     if not st.session_state.get("session_logged", False):
@@ -110,43 +143,39 @@ def main():
         st.title("📰 금융 뉴스 도우미")
 
         if st.session_state.selected_article is None:
-            # ✅ 1단계: 뉴스 목록 먼저 렌더링 (즉시 표시, 매우 빠름)
-            NewsList(st.session_state.news_articles)
+            # ✅ 1단계: 뉴스 목록 먼저 렌더링 (즉시 표시, 블로킹 없음)
+            # 뉴스 데이터가 있으면 표시, 없으면 빈 상태로 표시 (백그라운드에서 로딩 중)
+            NewsList(st.session_state.news_articles if st.session_state.news_articles else [])
             
-            # ✅ 2단계: 요약 박스 렌더링 (OpenAI 요약은 준비되면 표시)
+            # 뉴스가 로딩 중이면 표시
+            if st.session_state.get("news_loading", False):
+                st.caption("🔄 최신 뉴스를 불러오는 중...")
+            
+            # ✅ 2단계: 요약 박스 렌더링 (준비되면 표시, 블로킹 없음)
             # 텍스트 사전이 준비되었는지 확인
             if st.session_state.get("terms_initialized", False):
-                SummaryBox(st.session_state.news_articles, use_openai=USE_OPENAI)
+                SummaryBox(st.session_state.news_articles if st.session_state.news_articles else [], use_openai=USE_OPENAI)
             else:
-                # 아직 초기화 중이면 로딩 표시
-                with st.spinner("🤖 금융 용어 사전을 불러오는 중..."):
-                    # 백그라운드 초기화 강제 실행
-                    init_app_background()
-                    SummaryBox(st.session_state.news_articles, use_openai=USE_OPENAI)
+                # 아직 초기화 중이면 표시하지 않음 (블로킹 없음)
+                # 백그라운드에서 초기화 중이므로 나중에 자동으로 표시됨
+                pass
         else:
             ArticleDetail()
 
-    # ④ 오른쪽 챗봇 영역 (용어 사전이 준비되면 표시)
+    # ④ 오른쪽 챗봇 영역 (용어 사전이 준비되면 표시, 블로킹 없음)
     with col_chat:
         # 텍스트 사전이 준비되었는지 확인
         if st.session_state.get("terms_initialized", False):
             ChatPanel(st.session_state.financial_terms, use_openai=USE_OPENAI)
         else:
-            # 아직 초기화 중이면 로딩 표시
+            # 아직 초기화 중이면 간단한 메시지만 표시 (블로킹 없음)
             st.info("💡 금융 용어 사전을 불러오는 중...")
-            # 백그라운드 초기화 강제 실행
-            init_app_background()
-            if st.session_state.get("terms_initialized", False):
-                ChatPanel(st.session_state.financial_terms, use_openai=USE_OPENAI)
+            # 백그라운드에서 초기화 중이므로 다음 렌더링 시 자동으로 표시됨
 
-    # ⑤ 왼쪽 사이드바: 용어 목록, 설정, 사용법 (용어 사전이 준비되면 표시)
+    # ⑤ 왼쪽 사이드바: 용어 목록, 설정, 사용법 (용어 사전이 준비되면 표시, 블로킹 없음)
     if st.session_state.get("terms_initialized", False):
         Sidebar(st.session_state.financial_terms)
-    else:
-        # 아직 초기화 중이면 사이드바는 나중에 표시
-        init_app_background()
-        if st.session_state.get("terms_initialized", False):
-            Sidebar(st.session_state.financial_terms)
+    # 용어 사전이 없으면 사이드바 표시 안 함 (블로킹 없음)
 
 
 

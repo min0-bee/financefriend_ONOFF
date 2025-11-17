@@ -1095,9 +1095,23 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
         collection = st.session_state.rag_collection
         embedding_model = st.session_state.rag_embedding_model
 
-        query_embedding = embedding_model.encode([query])[0]
-        if perf_enabled:
-            step_start = _perf_step(perf_enabled, perf_steps, "encode", step_start)
+        # ✅ 성능 개선: 임베딩 결과 캐싱 (동일 질문에 대한 재사용)
+        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()
+        embedding_cache_key = f"rag_embedding_cache_{query_hash}"
+        
+        cached_embedding = st.session_state.get(embedding_cache_key)
+        if cached_embedding is not None:
+            # 캐시 히트: 임베딩 인코딩 생략 (거의 0ms)
+            query_embedding = cached_embedding
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "encode_cached", step_start)
+        else:
+            # 캐시 미스: 임베딩 인코딩 수행
+            query_embedding = embedding_model.encode([query])[0]
+            # 캐시에 저장 (다음 호출 시 즉시 사용)
+            st.session_state[embedding_cache_key] = query_embedding
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "encode", step_start)
 
         results = collection.query(
             query_embeddings=[query_embedding.tolist()],
