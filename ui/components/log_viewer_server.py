@@ -621,14 +621,14 @@ def render():
     
     st.markdown("## 📊 로그 뷰어")
 
-    # event_log 중심 모드 (Supabase에서 직접 가져오기)
-    if not API_ENABLE and SUPABASE_ENABLE:
-        st.info("📊 event_log 중심 모드: Supabase에서 데이터를 가져옵니다.")
+    # event_log 중심 모드 (Supabase에서 직접 가져오기) - 프로덕션 환경에서는 숨김
+    # if not API_ENABLE and SUPABASE_ENABLE:
+    #     st.info("📊 event_log 중심 모드: Supabase에서 데이터를 가져옵니다.")
 
-        viewer_user_id = _get_user_id()
+    viewer_user_id = _get_user_id()
 
-        with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
-            df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
+    with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
+        df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
 
         if df.empty:
             st.info("📭 아직 이벤트 로그가 없습니다. 앱을 사용하면 데이터가 수집됩니다.")

@@ -38,12 +38,13 @@ def render(terms: dict[str, dict]):
                 st.info("📡 데이터 전송 대기 중...")
                 st.caption(f"서버: {API_BASE_URL}")
         else:
-            # event_log 중심 모드 확인
-            if SUPABASE_ENABLE:
-                st.success("✅ event_log 중심 모드 (Supabase)")
-                st.caption("📊 모든 이벤트가 Supabase에 기록됩니다")
-            else:
-                st.warning("⚠️ API 비활성화 (로컬 CSV만 저장)")
+            # event_log 중심 모드 확인 (프로덕션 환경에서는 숨김)
+            # if SUPABASE_ENABLE:
+            #     st.success("✅ event_log 중심 모드 (Supabase)")
+            #     st.caption("📊 모든 이벤트가 Supabase에 기록됩니다")
+            # else:
+            #     st.warning("⚠️ API 비활성화 (로컬 CSV만 저장)")
+            pass
         
         st.markdown("---")
         st.subheader("📚 금융 용어 사전")

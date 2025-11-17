@@ -157,7 +157,8 @@ def main():
         selected_view = st.radio("화면 선택", view_options, index=view_options.index(current_view))
         st.session_state["main_view"] = selected_view
 
-        render_llm_diagnostics()
+        # LLM 연결 진단 패널 숨김 (프로덕션 환경)
+        # render_llm_diagnostics()
 
     if st.session_state["main_view"] == "로그 뷰어":
         # 이중 체크: URL 직접 접근 방지
