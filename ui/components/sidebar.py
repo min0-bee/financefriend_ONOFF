@@ -4,7 +4,20 @@ from core.config import API_ENABLE, API_BASE_URL, SUPABASE_ENABLE
 
 def render(terms: dict[str, dict]):
     with st.sidebar:
-        st.header("⚙️ 설정")
+        st.header("📖 사용 방법")
+        
+        # 간략한 사용 방법 안내
+        st.markdown("""
+        **1. 뉴스 선택**
+        - 목록에서 관심 있는 뉴스를 클릭하세요
+        
+        **2. 용어 확인**
+        - 하이라이트된 금융 용어를 클릭하세요
+        
+        **3. 설명 확인**
+        - 오른쪽 챗봇에서 자세한 설명을 확인하세요
+        """)
+        
         st.markdown("---")
         
         # API 전송 상태 표시
@@ -52,7 +65,3 @@ def render(terms: dict[str, dict]):
         with st.expander("용어 목록 보기"):
             for t in terms.keys():
                 st.write(f"• {t}")
-        st.markdown("---")
-        st.info("1) 뉴스 선택 → 2) 하이라이트된 용어 클릭 → 3) 오른쪽 챗봇 확인")
-        st.markdown("---")
-        st.caption("💡 OpenAI 연동은 추후 활성화 예정")
