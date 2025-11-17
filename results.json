@@ -1,0 +1,339 @@
+{
+  "prompt": "?명뵆?덉씠?섏씠 萸먯빞?",
+  "term": null,
+  "runs": 10,
+  "original": {
+    "timings": {
+      "total": {
+        "mean": 4.615623700007563,
+        "min": 3.9431713000521995,
+        "max": 6.153084200050216,
+        "stdev": 0.7395641236576499
+      },
+      "build_messages": {
+        "mean": 3.955001011490822e-05,
+        "min": 1.8300022929906845e-05,
+        "max": 0.00011220003943890333,
+        "stdev": 3.241376488529757e-05
+      },
+      "api_call": {
+        "mean": 4.6155587799905335,
+        "min": 3.943119100003969,
+        "max": 6.15295389998937,
+        "stdev": 0.7395437364380366
+      },
+      "parse_response": {
+        "mean": 1.25700025819242e-05,
+        "min": 7.90000194683671e-06,
+        "max": 2.9999995604157448e-05,
+        "stdev": 6.745048221878915e-06
+      },
+      "format_output": {
+        "mean": 1.2800004333257675e-05,
+        "min": 8.200004231184721e-06,
+        "max": 1.910002902150154e-05,
+        "stdev": 3.8291353277232664e-06
+      }
+    },
+    "message_count": {
+      "mean": 3,
+      "min": 3,
+      "max": 3,
+      "stdev": 0.0
+    }
+  },
+  "optimized": {
+    "timings": {
+      "total": {
+        "mean": 3.178130669990787,
+        "min": 2.690271799918264,
+        "max": 3.60745200002566,
+        "stdev": 0.27551581614209747
+      },
+      "build_messages": {
+        "mean": 3.238999051973224e-05,
+        "min": 1.8199963960796595e-05,
+        "max": 5.1799986977130175e-05,
+        "stdev": 1.3944367679382645e-05
+      },
+      "api_call": {
+        "mean": 3.1780601000005846,
+        "min": 2.690232199965976,
+        "max": 3.6072983000194654,
+        "stdev": 0.2754860691634248
+      },
+      "parse_response": {
+        "mean": 1.7120002303272487e-05,
+        "min": 8.400005754083395e-06,
+        "max": 5.540001438930631e-05,
+        "stdev": 1.668058769273282e-05
+      },
+      "format_output": {
+        "mean": 1.4950003242120147e-05,
+        "min": 7.800001185387373e-06,
+        "max": 4.140002420172095e-05,
+        "stdev": 1.2525476307341954e-05
+      },
+      "token_estimation": {
+        "mean": 5.449994932860136e-06,
+        "min": 3.3999676816165447e-06,
+        "max": 9.90001717582345e-06,
+        "stdev": 2.391778390518552e-06
+      },
+      "logging_overhead": {
+        "mean": 6.599992047995329e-07,
+        "min": 3.00002284348011e-07,
+        "max": 1.800013706088066e-06,
+        "stdev": 5.146694519266861e-07
+      }
+    },
+    "message_count": {
+      "mean": 7,
+      "min": 7,
+      "max": 7,
+      "stdev": 0.0
+    },
+    "token_estimate": {
+      "mean": 229,
+      "min": 229,
+      "max": 229,
+      "stdev": 0.0
+    },
+    "input_tokens": {
+      "mean": 581,
+      "min": 581,
+      "max": 581,
+      "stdev": 0.0
+    },
+    "output_tokens": {
+      "mean": 123.6,
+      "min": 113,
+      "max": 142,
+      "stdev": 10.340857475728662
+    }
+  },
+  "raw_original": [
+    {
+      "total": 5.234369699959643,
+      "build_messages": 5.259999306872487e-05,
+      "api_call": 5.234271099965554,
+      "parse_response": 2.9999995604157448e-05,
+      "format_output": 1.6000005416572094e-05,
+      "message_count": 3
+    },
+    {
+      "total": 3.9452413999824785,
+      "build_messages": 2.1499989088624716e-05,
+      "api_call": 3.9451928999624215,
+      "parse_response": 1.0400020983070135e-05,
+      "format_output": 1.6600009985268116e-05,
+      "message_count": 3
+    },
+    {
+      "total": 3.9431713000521995,
+      "build_messages": 1.9300030544400215e-05,
+      "api_call": 3.943119100003969,
+      "parse_response": 1.7900019884109497e-05,
+      "format_output": 1.4999997802078724e-05,
+      "message_count": 3
+    },
+    {
+      "total": 6.153084200050216,
+      "build_messages": 0.00011220003943890333,
+      "api_call": 6.15295389998937,
+      "parse_response": 8.300004992634058e-06,
+      "format_output": 9.800016414374113e-06,
+      "message_count": 3
+    },
+    {
+      "total": 3.987680700025521,
+      "build_messages": 1.9499973859637976e-05,
+      "api_call": 3.9876379999914207,
+      "parse_response": 1.190003240481019e-05,
+      "format_output": 1.1300027836114168e-05,
+      "message_count": 3
+    },
+    {
+      "total": 4.136030800000299,
+      "build_messages": 7.940002251416445e-05,
+      "api_call": 4.135921599983703,
+      "parse_response": 1.0699965059757233e-05,
+      "format_output": 1.910002902150154e-05,
+      "message_count": 3
+    },
+    {
+      "total": 4.623614100040868,
+      "build_messages": 2.0000035874545574e-05,
+      "api_call": 4.623569999996107,
+      "parse_response": 1.0100018698722124e-05,
+      "format_output": 1.3999990187585354e-05,
+      "message_count": 3
+    },
+    {
+      "total": 5.252929399954155,
+      "build_messages": 3.339996328577399e-05,
+      "api_call": 5.252877400023863,
+      "parse_response": 9.699957445263863e-06,
+      "format_output": 8.90000956133008e-06,
+      "message_count": 3
+    },
+    {
+      "total": 4.741859599947929,
+      "build_messages": 1.8300022929906845e-05,
+      "api_call": 4.741823399963323,
+      "parse_response": 8.800008799880743e-06,
+      "format_output": 9.09995287656784e-06,
+      "message_count": 3
+    },
+    {
+      "total": 4.138255800062325,
+      "build_messages": 1.9300030544400215e-05,
+      "api_call": 4.138220400025602,
+      "parse_response": 7.90000194683671e-06,
+      "format_output": 8.200004231184721e-06,
+      "message_count": 3
+    }
+  ],
+  "raw_optimized": [
+    {
+      "total": 3.019130699976813,
+      "build_messages": 2.1899992134422064e-05,
+      "token_estimation": 4.400033503770828e-06,
+      "logging_overhead": 5.00003807246685e-07,
+      "api_call": 3.0190794999944046,
+      "parse_response": 1.079996582120657e-05,
+      "format_output": 1.3599987141788006e-05,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 2.73,
+      "input_tokens": 581,
+      "output_tokens": 115
+    },
+    {
+      "total": 3.3226808000472374,
+      "build_messages": 4.710000939667225e-05,
+      "token_estimation": 9.90001717582345e-06,
+      "logging_overhead": 9.00006853044033e-07,
+      "api_call": 3.3226037999847904,
+      "parse_response": 1.0000017937272787e-05,
+      "format_output": 9.100011084228754e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 3.04,
+      "input_tokens": 581,
+      "output_tokens": 122
+    },
+    {
+      "total": 3.60745200002566,
+      "build_messages": 5.1799986977130175e-05,
+      "token_estimation": 4.799978341907263e-06,
+      "logging_overhead": 3.00002284348011e-07,
+      "api_call": 3.6072983000194654,
+      "parse_response": 5.540001438930631e-05,
+      "format_output": 4.140002420172095e-05,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 3.329,
+      "input_tokens": 581,
+      "output_tokens": 139
+    },
+    {
+      "total": 2.9527668000082485,
+      "build_messages": 2.110004425048828e-05,
+      "token_estimation": 3.89997148886323e-06,
+      "logging_overhead": 3.00002284348011e-07,
+      "api_call": 2.9527232999680564,
+      "parse_response": 9.90001717582345e-06,
+      "format_output": 8.300004992634058e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 2.661,
+      "input_tokens": 581,
+      "output_tokens": 118
+    },
+    {
+      "total": 3.335814299993217,
+      "build_messages": 2.6999972760677338e-05,
+      "token_estimation": 4.599976819008589e-06,
+      "logging_overhead": 4.00003045797348e-07,
+      "api_call": 3.335706299985759,
+      "parse_response": 4.0700018871575594e-05,
+      "format_output": 3.530003596097231e-05,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 3.051,
+      "input_tokens": 581,
+      "output_tokens": 113
+    },
+    {
+      "total": 3.4761779999826103,
+      "build_messages": 4.379998426884413e-05,
+      "token_estimation": 6.599992047995329e-06,
+      "logging_overhead": 1.2999516911804676e-06,
+      "api_call": 3.4761083000339568,
+      "parse_response": 9.000010322779417e-06,
+      "format_output": 9.000010322779417e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 3.201,
+      "input_tokens": 581,
+      "output_tokens": 130
+    },
+    {
+      "total": 3.2548059000400826,
+      "build_messages": 5.019997479394078e-05,
+      "token_estimation": 9.400013368576765e-06,
+      "logging_overhead": 1.800013706088066e-06,
+      "api_call": 3.2547270000213757,
+      "parse_response": 8.90000956133008e-06,
+      "format_output": 8.600007276982069e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 2.973,
+      "input_tokens": 581,
+      "output_tokens": 142
+    },
+    {
+      "total": 3.153099699993618,
+      "build_messages": 2.1499989088624716e-05,
+      "token_estimation": 3.3999676816165447e-06,
+      "logging_overhead": 4.00003045797348e-07,
+      "api_call": 3.1530582000268623,
+      "parse_response": 8.400005754083395e-06,
+      "format_output": 7.800001185387373e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 2.868,
+      "input_tokens": 581,
+      "output_tokens": 125
+    },
+    {
+      "total": 2.969106699922122,
+      "build_messages": 2.1299987565726042e-05,
+      "token_estimation": 3.999972250312567e-06,
+      "logging_overhead": 3.00002284348011e-07,
+      "api_call": 2.9690641000051983,
+      "parse_response": 8.700008038431406e-06,
+      "format_output": 8.299946784973145e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 2.698,
+      "input_tokens": 581,
+      "output_tokens": 114
+    },
+    {
+      "total": 2.690271799918264,
+      "build_messages": 1.8199963960796595e-05,
+      "token_estimation": 3.500026650726795e-06,
+      "logging_overhead": 4.00003045797348e-07,
+      "api_call": 2.690232199965976,
+      "parse_response": 9.399955160915852e-06,
+      "format_output": 8.100003469735384e-06,
+      "message_count": 7,
+      "token_estimate": 229,
+      "api_latency_from_metadata": 2.418,
+      "input_tokens": 581,
+      "output_tokens": 118
+    }
+  ]
+}
