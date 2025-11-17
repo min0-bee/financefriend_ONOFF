@@ -6,7 +6,8 @@ import streamlit as st
 from streamlit.components.v1 import html as st_html
 from core.logger import log_event
 from rag.glossary import explain_term, search_terms_by_rag
-from core.utils import llm_chat
+from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request, search_related_article
+from data.news import parse_news_from_url, search_news_from_supabase
 from persona.persona import albwoong_persona_reply
 
 
@@ -66,7 +67,9 @@ def render(terms: dict[str, dict], use_openai: bool=False):
 
     # 대화 히스토리 렌더(기존 그대로)
     messages_html = []
-    for message in st.session_state.chat_history:
+    article_buttons = []  # 기사 버튼들을 별도로 저장
+    
+    for idx, message in enumerate(st.session_state.chat_history):
         role = message["role"]
         role_class = "user" if role == "user" else "assistant"
         content_html = (
@@ -92,6 +95,10 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                 """
             ).strip()
         )
+        
+        # 기사 목록이 있는 메시지인 경우 버튼 생성
+        if role == "assistant" and "articles" in message and message["articles"]:
+            article_buttons.append((idx, message["articles"]))
 
     chat_html = (
         "<div id='chat-scroll-box' class='chat-message-container' "
@@ -100,6 +107,39 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         + "<div id='chat-scroll-anchor'></div></div>"
     )
     st.markdown(chat_html, unsafe_allow_html=True)
+    
+    # 기사 버튼들 표시 (가장 최근 검색 결과만 표시)
+    if article_buttons:
+        # 가장 최근 메시지의 기사 버튼만 표시
+        msg_idx, articles = article_buttons[-1]
+        
+        st.markdown("---")
+        st.caption("📰 찾은 기사:")
+        for article in articles[:5]:  # 최대 5개만 표시
+            article_title = article.get("title", "제목 없음")
+            article_id = article.get("id")
+            
+            if st.button(
+                f"📄 {article_title[:50]}{'...' if len(article_title) > 50 else ''}",
+                key=f"article_btn_{msg_idx}_{article_id}",
+                use_container_width=True
+            ):
+                # 기사 선택 및 상세 화면으로 이동
+                st.session_state.selected_article = article
+                st.session_state.detail_enter_logged = False
+                
+                # 로그 기록
+                log_event(
+                    "news_selected_from_chat",
+                    news_id=article_id,
+                    surface="sidebar",
+                    payload={
+                        "title": article_title,
+                        "source": "chat_button"
+                    }
+                )
+                
+                st.rerun()
     st_html(
         """
         <script>
@@ -121,6 +161,139 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         t0 = time.time()
         log_event("chat_question", message=user_input, source="chat", surface="sidebar")
         st.session_state.chat_history.append({"role": "user", "content": user_input})
+
+        # 🔗 URL 감지 및 처리 (최우선)
+        urls = extract_urls_from_text(user_input)
+        if urls:
+            # 첫 번째 URL 사용
+            url = urls[0]
+            with st.spinner("🔄 뉴스 기사를 가져오는 중..."):
+                try:
+                    article = parse_news_from_url(url)
+                    
+                    if article:
+                        # 성공 메시지와 함께 버튼 표시
+                        explanation = f"✅ 요청한 뉴스를 불러왔어. 아래 버튼을 클릭해줘! 🦉"
+                        
+                        # 챗 히스토리에 메시지와 기사 저장 (버튼 표시용)
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": explanation,
+                            "articles": [article]  # 단일 기사를 리스트로 저장
+                        })
+                        
+                        # 로그 기록
+                        log_event(
+                            "news_url_added_from_chat",
+                            news_id=article.get("id"),
+                            surface="sidebar",
+                            payload={
+                                "url": url,
+                                "title": article.get("title"),
+                                "source": "chat"
+                            }
+                        )
+                        
+                        st.rerun()
+                    else:
+                        explanation = "❌ 기사를 가져올 수 없었어요. URL을 확인해주세요. 🦉"
+                        st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                        log_event(
+                            "news_url_add_error",
+                            surface="sidebar",
+                            payload={
+                                "url": url,
+                                "error": "파싱 실패"
+                            }
+                        )
+                        st.rerun()
+                        
+                except Exception as e:
+                    explanation = f"❌ 오류가 발생했어요: {str(e)} 🦉"
+                    st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                    log_event(
+                        "news_url_add_error",
+                        surface="sidebar",
+                        payload={
+                            "url": url,
+                            "error": str(e)
+                        }
+                    )
+                    st.rerun()
+            
+            # URL 처리 완료 후 함수 종료
+            return
+
+        # 📰 기사 찾기 요청 감지 및 처리
+        is_search_request, keyword = detect_article_search_request(user_input)
+        if is_search_request and keyword:
+            with st.spinner(f"🔍 '{keyword}' 관련 뉴스를 찾는 중..."):
+                # 1단계: Supabase에서 관련 뉴스 검색
+                supabase_articles = search_news_from_supabase(keyword, limit=5)
+                
+                # 2단계: 현재 뉴스 리스트에서도 검색 (이미 로드된 뉴스 중에서)
+                articles = st.session_state.get("news_articles", [])
+                matched_article = search_related_article(articles, keyword)
+                
+                # 3단계: 모든 결과 합치기 (Supabase 결과 + 현재 리스트 결과)
+                all_found_articles = []
+                seen_ids = set()
+                
+                # 현재 리스트에서 찾은 기사 추가
+                if matched_article:
+                    article_id = matched_article.get("id")
+                    if article_id and article_id not in seen_ids:
+                        all_found_articles.append(matched_article)
+                        seen_ids.add(article_id)
+                
+                # Supabase에서 찾은 기사 추가
+                for article in supabase_articles:
+                    article_id = article.get("id")
+                    if article_id and article_id not in seen_ids:
+                        all_found_articles.append(article)
+                        seen_ids.add(article_id)
+                
+                if all_found_articles:
+                    # 찾은 기사들을 챗 히스토리에 특별한 형식으로 저장
+                    article_count = len(all_found_articles)
+                    explanation = f"✅ '{keyword}' 관련 최신 기사를 {article_count}개 찾았어! 아래 버튼에서 선택해줘!🦉"
+                    
+                    # 챗 히스토리에 메시지와 기사 목록 저장
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": explanation,
+                        "articles": all_found_articles  # 특별한 필드로 기사 목록 저장
+                    })
+                    
+                    # 로그 기록
+                    log_event(
+                        "news_search_from_chat",
+                        surface="sidebar",
+                        payload={
+                            "keyword": keyword,
+                            "found_count": article_count,
+                            "source": "chat",
+                            "supabase_results": len(supabase_articles)
+                        }
+                    )
+                    
+                    st.rerun()
+                else:
+                    # 기사를 찾지 못함
+                    explanation = f"❌ '{keyword}'와 관련된 기사를 찾지 못했어요. 다른 키워드로 시도해보세요. 🦉"
+                    st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                    log_event(
+                        "news_search_failed",
+                        surface="sidebar",
+                        payload={
+                            "keyword": keyword,
+                            "source": "chat"
+                        }
+                    )
+                    st.rerun()
+            
+            # 기사 찾기 처리 완료 후 함수 종료
+            return
 
         explanation = None
         matched_term = None
