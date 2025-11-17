@@ -359,6 +359,14 @@ def _clean_article_content(content: str, title: str = None) -> str:
         r'\(예시\)',
         
         # 기자 정보 및 날짜/시간
+        r'^[가-힣]+\s*기자',
+        r'구독하기',
+        r'입력\s*\d{4}\.\d{1,2}\.\d{1,2}',
+        r'입력\s*\d{4}\.\d{1,2}\.\d{1,2}\s*\d{1,2}:\d{1,2}',
+        r'수정\s*\d{4}\.\d{1,2}\.\d{1,2}',
+        r'수정\s*\d{4}\.\d{1,2}\.\d{1,2}\s*\d{1,2}:\d{1,2}',
+        r'지면\s*[A-Z]\d+',
+        r'글자크기\s*조절',
         r'^[가-힣]+\s*기자\s*\([^)]+\)',
         r'^\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.\s*\d{1,2}:\d{2}',
         r'^자\s*수정\s*\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}',
@@ -370,7 +378,11 @@ def _clean_article_content(content: str, title: str = None) -> str:
         
         # 인쇄/공유 관련
         r'인쇄하기',
+        r'프린트',
         r'공유하기',
+        r'기사\s*스크랩',
+        r'스크랩',
+        r'클린뷰',
         r'페이스북',
         r'트위터',
         r'카카오톡',
@@ -385,8 +397,14 @@ def _clean_article_content(content: str, title: str = None) -> str:
         
         # 관련 기사/추천 기사
         r'관련\s*기사',
+        r'관련\s*뉴스',
         r'추천\s*기사',
         r'인기\s*기사',
+        r'후속\s*기사',
+        r'후속기사\s*원해요',
+        r'원해요',
+        r'싫어요',
+        r'ADVERTISEMENT',
         r'광고',
         r'\[속보\]',
         r'\[단독\]',
@@ -403,6 +421,14 @@ def _clean_article_content(content: str, title: str = None) -> str:
         r'문화생활',
         r'입체적으로\s*전달',
         
+        # 본문 헤더 관련
+        r'^본문',
+        r'경제\s*금융',
+        r'금융\s*·\s*증권',
+        r'금융·증권',
+        r'수정\s*등록',
+        r'등록\s*수정',
+        
         # 공통 불필요한 텍스트
         r'^\d+\s*$',
         r'^\s*0\s*$',
@@ -417,21 +443,32 @@ def _clean_article_content(content: str, title: str = None) -> str:
     lines = content.split('\n')
     cleaned_lines = []
     skip_until_empty = False  # 관련 기사 섹션 건너뛰기 플래그
+    skip_count = 0  # 건너뛴 줄 수 (너무 많이 건너뛰면 리셋)
     
     for line in lines:
         line = line.strip()
         if not line:
             if skip_until_empty:
-                skip_until_empty = False
+                skip_count += 1
+                # 빈 줄이 3개 연속 나오면 섹션 종료로 간주
+                if skip_count >= 3:
+                    skip_until_empty = False
+                    skip_count = 0
             continue
         
-        # 관련 기사 섹션 시작 감지
-        if re.search(r'관련\s*기사|추천\s*기사|인기\s*기사|다음\s*기사', line, re.IGNORECASE):
+        # 관련 기사 섹션 시작 감지 (관련 뉴스, 후속기사, ADVERTISEMENT 포함)
+        if re.search(r'관련\s*기사|관련\s*뉴스|추천\s*기사|인기\s*기사|다음\s*기사|후속\s*기사|후속기사|ADVERTISEMENT', line, re.IGNORECASE):
             skip_until_empty = True
+            skip_count = 0
             continue
         
         if skip_until_empty:
             # 관련 기사 섹션은 건너뛰기
+            skip_count += 1
+            # 50줄 이상 건너뛰면 리셋 (무한 루프 방지)
+            if skip_count >= 50:
+                skip_until_empty = False
+                skip_count = 0
             continue
         
         # 패턴 매칭하여 제거
@@ -455,10 +492,59 @@ def _clean_article_content(content: str, title: str = None) -> str:
         if re.search(r'^[가-힣].*?-\s*(매일경제|연합뉴스|조선일보|중앙일보|동아일보|한겨레|경향신문)', line):
             should_remove = True
         
-        # 짧은 줄 중 불필요한 것들 제거 (20자 이하이고 특정 패턴 포함)
-        if len(line) <= 20:
-            if re.search(r'(보기|이동|확인|닫기|설정|변경|재생|중지)', line, re.IGNORECASE):
+        # 짧은 줄 중 불필요한 것들 제거 (30자 이하이고 특정 패턴 포함)
+        if len(line) <= 30:
+            if re.search(r'(보기|이동|확인|닫기|설정|변경|재생|중지|구독|스크랩|공유|프린트|클린뷰)', line, re.IGNORECASE):
                 should_remove = True
+        
+        # UI 요소가 여러 개 나열된 줄 제거 (예: "기사 스크랩 공유 클린뷰 프린트")
+        if re.search(r'(기사\s*스크랩|스크랩|공유|클린뷰|프린트).*?(기사\s*스크랩|스크랩|공유|클린뷰|프린트)', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 기자 정보와 메타데이터가 섞인 줄 제거 (예: "전예진 기자 구독하기 입력 2025.11.16")
+        if re.search(r'[가-힣]+\s*기자.*?(구독|입력|수정|지면)', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 기자 이름만 있고 메타데이터가 포함된 줄 제거 (예: "심성미 입력 2025.11.16 18:52 수정 2025.11.16 18:52 지면 A1")
+        # 한글 이름(2-4글자) + 입력/수정/지면 패턴
+        if re.search(r'^[가-힣]{2,4}\s+(입력|수정|지면)', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 메타데이터가 여러 개 나열된 줄 제거 (예: "입력 2025.11.16 18:01 수정 2025.11.16 18:01 지면 A5")
+        if re.search(r'(입력|수정|지면|글자크기).*?(입력|수정|지면|글자크기)', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 메타데이터 패턴이 포함된 줄 제거 (입력/수정 날짜 + 시간 + 지면/글자크기 조합)
+        if re.search(r'입력\s*\d{4}\.\d{1,2}\.\d{1,2}.*?수정\s*\d{4}\.\d{1,2}\.\d{1,2}', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 짧은 줄 중 메타데이터가 포함된 경우 제거 (50자 이하이고 입력/수정/지면 포함)
+        if len(line) <= 50:
+            if re.search(r'(입력|수정|지면)\s*\d{4}\.\d{1,2}\.\d{1,2}', line, re.IGNORECASE):
+                should_remove = True
+        
+        # 본문 헤더 패턴 제거 (예: "본문 경제 금융·증권 안태호 기자 수정 등록")
+        if re.search(r'^본문', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 카테고리 + 기자 정보 + 메타데이터 조합 제거
+        if re.search(r'(경제|금융|증권).*?기자.*?(수정|등록)', line, re.IGNORECASE):
+            should_remove = True
+        
+        # "수정 등록" 또는 "등록 수정" 패턴이 포함된 줄 제거
+        if re.search(r'(수정\s*등록|등록\s*수정)', line, re.IGNORECASE):
+            should_remove = True
+        
+        # 취소선이 적용된 텍스트 제거 (HTML에서 제거되지 않은 경우 대비)
+        # 취소선 유니코드 문자 체크 (U+0336, U+0338, U+0335 등)
+        if '\u0336' in line or '\u0338' in line or '\u0335' in line:
+            should_remove = True
+        
+        # UI 버튼들이 반복되는 줄 제거 (예: "기사 스크랩 기사 스크랩 공유 공유")
+        ui_keywords = ['기사', '스크랩', '공유', '클린뷰', '프린트', '구독']
+        ui_count = sum(1 for keyword in ui_keywords if keyword in line)
+        if ui_count >= 3:  # UI 키워드가 3개 이상 포함되면 제거
+            should_remove = True
         
         if not should_remove:
             cleaned_lines.append(line)
@@ -563,6 +649,9 @@ def parse_news_from_url(url: str) -> Optional[Dict]:
                 # 스크립트와 스타일 태그 제거
                 for script in element(['script', 'style', 'nav', 'footer', 'aside']):
                     script.decompose()
+                # 취소선 태그 제거 (del, s, strike)
+                for del_tag in element(['del', 's', 'strike']):
+                    del_tag.decompose()
                 content = element.get_text(separator='\n', strip=True)
                 if content and len(content) > 100:  # 최소 길이 체크
                     break
@@ -573,6 +662,9 @@ def parse_news_from_url(url: str) -> Optional[Dict]:
             if body:
                 for script in body(['script', 'style', 'nav', 'footer', 'aside', 'header']):
                     script.decompose()
+                # 취소선 태그 제거 (del, s, strike)
+                for del_tag in body(['del', 's', 'strike']):
+                    del_tag.decompose()
                 paragraphs = body.find_all(['p', 'div'])
                 content_parts = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
                 content = '\n'.join(content_parts)
