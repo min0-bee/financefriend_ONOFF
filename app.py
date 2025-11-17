@@ -60,23 +60,58 @@ def main():
     from core.logger import log_event
     from data.news import load_news_cached, FALLBACK_NEWS
     
-    # 뉴스 데이터가 없으면 백그라운드에서 로드 (UI 블로킹 방지)
+    # 뉴스 데이터가 없으면 먼저 동기적으로 빠르게 시도 (캐시 히트 시 즉시)
+    # 실제 Supabase 뉴스를 우선적으로 로드 (Fallback 사용 안 함)
     if not st.session_state.news_articles and not st.session_state.get("news_loading", False):
         st.session_state["news_loading"] = True
-        def _load_news_async():
-            try:
-                news = load_news_cached()
-                if news:
-                    st.session_state.news_articles = news
-            except Exception:
-                # 에러 발생 시 Fallback 데이터 사용
-                st.session_state.news_articles = FALLBACK_NEWS
-            finally:
+        try:
+            # 먼저 동기적으로 시도 (캐시 히트 시 즉시 로드, Fallback 사용 안 함)
+            news = load_news_cached(use_fallback=False)
+            if news and len(news) > 0:
+                # 실제 Supabase 뉴스가 있으면 즉시 사용
+                st.session_state.news_articles = news
                 st.session_state["news_loading"] = False
-        threading.Thread(target=_load_news_async, daemon=True).start()
-        # 뉴스 로딩 중에는 Fallback 데이터 표시
-        if not st.session_state.news_articles:
-            st.session_state.news_articles = FALLBACK_NEWS
+            else:
+                # 뉴스가 없으면 백그라운드에서 재시도 (Supabase 연결 재확인)
+                def _load_news_async():
+                    try:
+                        # Supabase에서 실제 뉴스 로드 시도 (Fallback 사용 안 함)
+                        news_retry = load_news_cached(use_fallback=False)
+                        if news_retry and len(news_retry) > 0:
+                            # 실제 뉴스가 있으면 사용
+                            st.session_state.news_articles = news_retry
+                        else:
+                            # Supabase에서 뉴스를 가져올 수 없을 때만 Fallback 사용
+                            # (연결 실패 또는 뉴스가 실제로 없을 때)
+                            print("⚠️ Supabase에서 뉴스를 가져올 수 없어 Fallback 데이터를 사용합니다.")
+                            st.session_state.news_articles = FALLBACK_NEWS
+                    except Exception as e:
+                        # 에러 발생 시 Supabase 연결 실패로 간주하고 Fallback 사용
+                        print(f"⚠️ 뉴스 로드 실패: {e}, Fallback 데이터 사용")
+                        st.session_state.news_articles = FALLBACK_NEWS
+                    finally:
+                        st.session_state["news_loading"] = False
+                threading.Thread(target=_load_news_async, daemon=True).start()
+        except Exception as e:
+            # 첫 시도 실패 시 백그라운드에서 재시도
+            print(f"⚠️ 뉴스 로드 첫 시도 실패: {e}, 백그라운드에서 재시도")
+            def _load_news_async():
+                try:
+                    # Supabase에서 실제 뉴스 로드 시도 (Fallback 사용 안 함)
+                    news = load_news_cached(use_fallback=False)
+                    if news and len(news) > 0:
+                        st.session_state.news_articles = news
+                    else:
+                        # Supabase에서 뉴스를 가져올 수 없을 때만 Fallback 사용
+                        print("⚠️ Supabase에서 뉴스를 가져올 수 없어 Fallback 데이터를 사용합니다.")
+                        st.session_state.news_articles = FALLBACK_NEWS
+                except Exception as e2:
+                    # 에러 발생 시 Fallback 데이터 사용
+                    print(f"⚠️ 뉴스 로드 실패: {e2}, Fallback 데이터 사용")
+                    st.session_state.news_articles = FALLBACK_NEWS
+                finally:
+                    st.session_state["news_loading"] = False
+            threading.Thread(target=_load_news_async, daemon=True).start()
     
     # 세션 시작 로그는 뉴스 표시 후에 기록
     if not st.session_state.get("session_logged", False):

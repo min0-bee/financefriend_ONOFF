@@ -112,25 +112,39 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
         return []
 
 
-def collect_news() -> List[Dict]:
+def collect_news(use_fallback_on_empty: bool = False) -> List[Dict]:
     """
     Supabase DB에서 최신 뉴스 3개를 가져옵니다.
-    Supabase 연결 실패 시 샘플 데이터를 반환합니다.
+    
+    Args:
+        use_fallback_on_empty: True면 Supabase에서 뉴스가 없거나 연결 실패 시 Fallback 사용
+    
+    Returns:
+        Supabase에서 가져온 뉴스 리스트, 또는 Fallback 데이터 (use_fallback_on_empty=True일 때)
     """
     # Supabase에서 뉴스 가져오기 시도
     news_list = _fetch_news_from_supabase(limit=3)
 
+    # 실제 뉴스가 있으면 반환
     if news_list:
         return news_list
-
-    # Supabase 실패 시 Fallback 데이터 사용
-    return FALLBACK_NEWS
+    
+    # 뉴스가 없거나 연결 실패한 경우
+    if use_fallback_on_empty:
+        # Fallback 데이터 사용 (연결 실패 시에만)
+        return FALLBACK_NEWS
+    
+    # 뉴스가 없는 경우 빈 리스트 반환
+    return []
 
 
 @st.cache_data(ttl=300)  # 5분 캐시 (뉴스는 자주 변경되지 않음)
-def load_news_cached() -> List[Dict]:
+def load_news_cached(use_fallback: bool = False) -> List[Dict]:
     """
     뉴스 데이터를 캐싱하여 로드 (서버 전체 기준 5분 동안 재사용)
     ✅ 최적화: st.cache_data로 서버 기준 5분 안에 들어온 모든 세션이 같은 뉴스 결과 공유
+    
+    Args:
+        use_fallback: True면 Supabase 연결 실패 시 Fallback 데이터 사용 (기본값: False, 실제 뉴스만)
     """
-    return collect_news() or []
+    return collect_news(use_fallback_on_empty=use_fallback)
