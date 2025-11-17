@@ -497,18 +497,39 @@ def _fetch_event_logs_from_supabase(user_id: Optional[str] = None, limit: int = 
             if "event_time" in df.columns:
                 df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
             if "payload" in df.columns:
-                def _extract_term(payload):
+                def _extract_from_payload(payload, key):
+                    """payload에서 특정 키 값을 추출"""
                     if isinstance(payload, dict):
-                        return payload.get("term") or payload.get("payload", {}).get("term")
+                        return payload.get(key)
                     if isinstance(payload, str):
                         try:
                             data = json.loads(payload)
                             if isinstance(data, dict):
-                                return data.get("term") or (data.get("payload") or {}).get("term")
+                                return data.get(key)
                         except Exception:
                             return None
                     return None
-                df["term_from_payload"] = df["payload"].apply(_extract_term)
+                
+                # term 추출
+                df["term_from_payload"] = df["payload"].apply(lambda p: _extract_from_payload(p, "term"))
+                
+                # ✅ news_id 추출 (payload에서)
+                if "news_id" not in df.columns or df["news_id"].isna().all():
+                    df["news_id_from_payload"] = df["payload"].apply(lambda p: _extract_from_payload(p, "news_id") or _extract_from_payload(p, "article_id"))
+                    # 기존 news_id가 없거나 모두 None이면 payload에서 추출한 값 사용
+                    if "news_id" not in df.columns:
+                        df["news_id"] = df["news_id_from_payload"]
+                    else:
+                        df["news_id"] = df["news_id"].fillna(df["news_id_from_payload"])
+                
+                # ✅ latency_ms 추출 (payload에서)
+                if "latency_ms" not in df.columns or df["latency_ms"].isna().all():
+                    df["latency_ms_from_payload"] = df["payload"].apply(lambda p: _extract_from_payload(p, "latency_ms"))
+                    # 기존 latency_ms가 없거나 모두 None이면 payload에서 추출한 값 사용
+                    if "latency_ms" not in df.columns:
+                        df["latency_ms"] = df["latency_ms_from_payload"]
+                    else:
+                        df["latency_ms"] = df["latency_ms"].fillna(df["latency_ms_from_payload"])
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -585,7 +606,19 @@ def _fill_sessions_from_time(
 def render():
     """
     서버에서 데이터를 가져와서 로그 뷰어 렌더링
+    
+    ⚠️ 관리자 권한이 필요합니다.
     """
+    # 관리자 권한 체크
+    from core.user import is_admin_user
+    from core.logger import _get_user_id
+    
+    current_user_id = _get_user_id()
+    if not is_admin_user(current_user_id):
+        st.error("⚠️ 접근 권한이 없습니다. 로그 뷰어는 관리자만 접근할 수 있습니다.")
+        st.info("💡 관리자 계정으로 접속하거나 관리자에게 문의하세요.")
+        return
+    
     st.markdown("## 📊 로그 뷰어")
 
     # event_log 중심 모드 (Supabase에서 직접 가져오기)
@@ -665,6 +698,342 @@ def render():
             st.metric("챗 질문", int((df_view["event_name"] == "chat_question").sum()))
         with colC:
             st.metric("RAG 답변", int((df_view["event_name"] == "glossary_answer").sum()))
+
+        # ✅ 성능 분석 섹션 추가
+        st.markdown("### ⚡ 성능 분석 (병목 지점 파악)")
+        perf_events = df_view[df_view["event_name"].isin(["news_click", "news_detail_open", "glossary_click", "glossary_answer"])].copy()
+        
+        if not perf_events.empty and "payload" in perf_events.columns:
+            import json
+            
+            def extract_perf_data(row):
+                """payload에서 성능 데이터 추출 (event_name을 고려)"""
+                try:
+                    payload = row.get("payload") if isinstance(row, pd.Series) else row
+                    event_name = row.get("event_name") if isinstance(row, pd.Series) else None
+                    
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
+                    if not isinstance(payload, dict):
+                        return None
+                    
+                    # ✅ event_name에 따라 다른 처리
+                    if event_name == "news_detail_open":
+                        # news_detail_open 이벤트의 perf_steps 추출
+                        perf_steps = payload.get("perf_steps")
+                        if perf_steps and isinstance(perf_steps, dict):
+                            # highlight_ms가 있으면 news_detail_open
+                            if "highlight_ms" in perf_steps:
+                                return {
+                                    "highlight_ms": perf_steps.get("highlight_ms"),
+                                    "terms_filter_ms": perf_steps.get("terms_filter_ms"),
+                                    "total_ms": perf_steps.get("total_ms"),
+                                    "terms_count": perf_steps.get("terms_count"),
+                                    "content_length": perf_steps.get("content_length"),
+                                    "cache_hit": payload.get("cache_hit", False),
+                                    "highlight_cache_hit": payload.get("highlight_cache_hit", False),
+                                    "terms_cache_hit": payload.get("terms_cache_hit", False),
+                                }
+                    
+                    elif event_name == "news_click":
+                        # news_click 이벤트의 성능 데이터 추출
+                        click_process_ms = payload.get("click_process_ms")
+                        if click_process_ms is not None:
+                            return {
+                                "click_process_ms": click_process_ms,
+                                "content_length": payload.get("content_length"),
+                            }
+                    
+                    elif event_name in ("glossary_click", "glossary_answer"):
+                        # glossary_click/glossary_answer 이벤트의 성능 데이터 추출
+                        perf_steps = payload.get("perf_steps")
+                        if perf_steps and isinstance(perf_steps, dict):
+                            # explanation_ms가 있으면 glossary_click
+                            if "explanation_ms" in perf_steps:
+                                return {
+                                    "explanation_ms": perf_steps.get("explanation_ms"),
+                                    "total_ms": perf_steps.get("total_ms"),
+                                    "answer_length": perf_steps.get("answer_length"),
+                                }
+                    
+                    # ✅ event_name이 없거나 알 수 없는 경우, perf_steps 구조로 판단
+                    perf_steps = payload.get("perf_steps")
+                    if perf_steps and isinstance(perf_steps, dict):
+                        # highlight_ms가 있으면 news_detail_open
+                        if "highlight_ms" in perf_steps:
+                            return {
+                                "highlight_ms": perf_steps.get("highlight_ms"),
+                                "terms_filter_ms": perf_steps.get("terms_filter_ms"),
+                                "total_ms": perf_steps.get("total_ms"),
+                                "terms_count": perf_steps.get("terms_count"),
+                                "content_length": perf_steps.get("content_length"),
+                                "cache_hit": payload.get("cache_hit", False),
+                                "highlight_cache_hit": payload.get("highlight_cache_hit", False),
+                                "terms_cache_hit": payload.get("terms_cache_hit", False),
+                            }
+                        # explanation_ms가 있으면 glossary_click
+                        elif "explanation_ms" in perf_steps:
+                            return {
+                                "explanation_ms": perf_steps.get("explanation_ms"),
+                                "total_ms": perf_steps.get("total_ms"),
+                                "answer_length": perf_steps.get("answer_length"),
+                            }
+                    
+                    # news_click 이벤트 체크 (perf_steps가 없는 경우)
+                    click_process_ms = payload.get("click_process_ms")
+                    if click_process_ms is not None:
+                        return {
+                            "click_process_ms": click_process_ms,
+                            "content_length": payload.get("content_length"),
+                        }
+                    
+                    return None
+                except:
+                    return None
+            
+            perf_events["perf_data"] = perf_events.apply(extract_perf_data, axis=1)
+            perf_events_with_data = perf_events[perf_events["perf_data"].notna()]
+            
+            if not perf_events_with_data.empty:
+                # news_detail_open 성능 분석
+                detail_events = perf_events_with_data[perf_events_with_data["event_name"] == "news_detail_open"]
+                if not detail_events.empty:
+                    perf_df_data = []
+                    for idx, row in detail_events.iterrows():
+                        perf = row["perf_data"]
+                        if perf and isinstance(perf, dict):
+                            # ✅ news_id와 latency_ms를 payload에서도 추출 시도
+                            news_id = row.get("news_id")
+                            if not news_id or pd.isna(news_id):
+                                # payload에서 추출 시도
+                                payload_raw = row.get("payload")
+                                if payload_raw:
+                                    if isinstance(payload_raw, str):
+                                        try:
+                                            payload_dict = json.loads(payload_raw)
+                                            news_id = news_id or payload_dict.get("news_id") or payload_dict.get("article_id")
+                                        except:
+                                            pass
+                                    elif isinstance(payload_raw, dict):
+                                        news_id = news_id or payload_raw.get("news_id") or payload_raw.get("article_id")
+                            
+                            latency_ms = row.get("latency_ms")
+                            if not latency_ms or pd.isna(latency_ms):
+                                # payload에서 추출 시도
+                                payload_raw = row.get("payload")
+                                if payload_raw:
+                                    if isinstance(payload_raw, str):
+                                        try:
+                                            payload_dict = json.loads(payload_raw)
+                                            latency_ms = latency_ms or payload_dict.get("latency_ms")
+                                        except:
+                                            pass
+                                    elif isinstance(payload_raw, dict):
+                                        latency_ms = latency_ms or payload_raw.get("latency_ms")
+                            
+                            cache_hit = perf.get("cache_hit", False)
+                            highlight_cache_hit = perf.get("highlight_cache_hit", False)
+                            terms_cache_hit = perf.get("terms_cache_hit", False)
+                            
+                            # 캐시 히트 표시 개선
+                            cache_status = []
+                            if highlight_cache_hit:
+                                cache_status.append("하이라이트✅")
+                            if terms_cache_hit:
+                                cache_status.append("용어✅")
+                            if not cache_status:
+                                cache_status.append("❌")
+                            
+                            # ✅ 데이터 추출 및 검증
+                            highlight_ms = perf.get("highlight_ms")
+                            terms_filter_ms = perf.get("terms_filter_ms")
+                            total_ms = perf.get("total_ms")
+                            terms_count = perf.get("terms_count")
+                            content_length = perf.get("content_length")
+                            
+                            # ✅ total_ms가 없거나 0이면 highlight_ms + terms_filter_ms로 추정
+                            if not total_ms or total_ms == 0:
+                                if highlight_ms is not None and terms_filter_ms is not None:
+                                    total_ms = highlight_ms + terms_filter_ms
+                            
+                            perf_df_data.append({
+                                "event_time": row.get("event_time"),
+                                "news_id": news_id,
+                                "latency_ms": latency_ms if latency_ms is not None else total_ms,  # latency_ms가 없으면 total_ms 사용
+                                "하이라이트 처리 (ms)": highlight_ms if highlight_ms is not None else 0,
+                                "용어 필터링 (ms)": terms_filter_ms if terms_filter_ms is not None else 0,
+                                "전체 렌더링 (ms)": total_ms if total_ms is not None else 0,
+                                "발견된 용어 수": terms_count if terms_count is not None else 0,
+                                "기사 길이 (자)": content_length if content_length is not None else 0,
+                                "캐시 히트": " / ".join(cache_status),  # ✅ 상세 캐시 히트 정보
+                            })
+                    
+                    if perf_df_data:
+                        perf_df = pd.DataFrame(perf_df_data)
+                        perf_df = perf_df.sort_values("event_time", ascending=False)
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("#### 📊 기사 렌더링 성능 통계")
+                            if len(perf_df) > 0:
+                                avg_highlight = perf_df["하이라이트 처리 (ms)"].mean()
+                                avg_filter = perf_df["용어 필터링 (ms)"].mean()
+                                avg_total = perf_df["전체 렌더링 (ms)"].mean()
+                                # ✅ 캐시 히트율 계산 개선: 하이라이트 또는 용어 캐시 중 하나라도 히트면 캐시 히트로 간주
+                                cache_hit_count = perf_df["캐시 히트"].str.contains("✅", na=False).sum()
+                                cache_hit_rate = (cache_hit_count / len(perf_df) * 100) if len(perf_df) > 0 else 0
+                                
+                                st.metric("평균 하이라이트 처리", f"{avg_highlight:.0f}ms")
+                                st.metric("평균 용어 필터링", f"{avg_filter:.0f}ms")
+                                st.metric("평균 전체 렌더링", f"{avg_total:.0f}ms")
+                                st.metric("캐시 히트율", f"{cache_hit_rate:.1f}%")
+                        
+                        with col2:
+                            st.markdown("#### 🔍 병목 지점 분석")
+                            if len(perf_df) > 0:
+                                highlight_pct = (perf_df["하이라이트 처리 (ms)"] / perf_df["전체 렌더링 (ms)"] * 100).mean()
+                                filter_pct = (perf_df["용어 필터링 (ms)"] / perf_df["전체 렌더링 (ms)"] * 100).mean()
+                                
+                                st.write(f"**하이라이트 처리 비율**: {highlight_pct:.1f}%")
+                                st.write(f"**용어 필터링 비율**: {filter_pct:.1f}%")
+                                
+                                if highlight_pct > 50:
+                                    st.warning("⚠️ 하이라이트 처리가 주요 병목입니다!")
+                                elif filter_pct > 30:
+                                    st.warning("⚠️ 용어 필터링이 병목일 수 있습니다.")
+                                else:
+                                    st.info("✅ 성능이 양호합니다.")
+                        
+                        st.markdown("#### 📋 상세 성능 데이터")
+                        st.dataframe(perf_df.head(20), use_container_width=True, height=400)
+                
+                # news_click 성능 분석
+                click_events = perf_events_with_data[perf_events_with_data["event_name"] == "news_click"]
+                if not click_events.empty:
+                    click_perf_data = []
+                    for idx, row in click_events.iterrows():
+                        perf = row["perf_data"]
+                        if perf and isinstance(perf, dict):
+                            click_perf_data.append({
+                                "event_time": row.get("event_time"),
+                                "news_id": row.get("news_id"),
+                                "클릭 처리 (ms)": perf.get("click_process_ms"),
+                                "기사 길이 (자)": perf.get("content_length"),
+                            })
+                    
+                    if click_perf_data:
+                        click_perf_df = pd.DataFrame(click_perf_data)
+                        click_perf_df = click_perf_df.sort_values("event_time", ascending=False)
+                        
+                        st.markdown("#### 🖱️ 뉴스 클릭 성능")
+                        avg_click = click_perf_df["클릭 처리 (ms)"].mean()
+                        st.metric("평균 클릭 처리 시간", f"{avg_click:.0f}ms")
+                        st.dataframe(click_perf_df.head(10), use_container_width=True, height=200)
+                
+                # glossary_click 성능 분석
+                term_click_events = perf_events_with_data[perf_events_with_data["event_name"] == "glossary_click"]
+                if not term_click_events.empty:
+                    term_click_perf_data = []
+                    for idx, row in term_click_events.iterrows():
+                        perf = row["perf_data"]
+                        if perf and isinstance(perf, dict):
+                            # ✅ term과 news_id를 payload에서도 추출 시도
+                            term = row.get("term")
+                            if not term or pd.isna(term):
+                                payload_raw = row.get("payload")
+                                if payload_raw:
+                                    if isinstance(payload_raw, str):
+                                        try:
+                                            payload_dict = json.loads(payload_raw)
+                                            term = term or payload_dict.get("term")
+                                        except:
+                                            pass
+                                    elif isinstance(payload_raw, dict):
+                                        term = term or payload_raw.get("term")
+                            
+                            news_id = row.get("news_id")
+                            if not news_id or pd.isna(news_id):
+                                payload_raw = row.get("payload")
+                                if payload_raw:
+                                    if isinstance(payload_raw, str):
+                                        try:
+                                            payload_dict = json.loads(payload_raw)
+                                            news_id = news_id or payload_dict.get("news_id") or payload_dict.get("article_id")
+                                        except:
+                                            pass
+                                    elif isinstance(payload_raw, dict):
+                                        news_id = news_id or payload_raw.get("news_id") or payload_raw.get("article_id")
+                            
+                            term_click_perf_data.append({
+                                "event_time": row.get("event_time"),
+                                "term": term,
+                                "news_id": news_id,
+                                "설명 생성 (ms)": perf.get("explanation_ms"),
+                                "전체 처리 (ms)": perf.get("total_ms"),
+                                "답변 길이 (자)": perf.get("answer_length"),
+                            })
+                    
+                    if term_click_perf_data:
+                        term_click_perf_df = pd.DataFrame(term_click_perf_data)
+                        term_click_perf_df = term_click_perf_df.sort_values("event_time", ascending=False)
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("#### 📌 용어 클릭 성능 통계")
+                            if len(term_click_perf_df) > 0:
+                                # ✅ nan 값 제외하고 평균 계산
+                                explanation_col = term_click_perf_df["설명 생성 (ms)"].dropna()
+                                total_col = term_click_perf_df["전체 처리 (ms)"].dropna()
+                                answer_len_col = term_click_perf_df["답변 길이 (자)"].dropna()
+                                
+                                avg_explanation = explanation_col.mean() if len(explanation_col) > 0 else None
+                                avg_total = total_col.mean() if len(total_col) > 0 else None
+                                avg_answer_len = answer_len_col.mean() if len(answer_len_col) > 0 else None
+                                
+                                if avg_explanation is not None:
+                                    st.metric("평균 설명 생성 시간", f"{avg_explanation:.0f}ms")
+                                else:
+                                    st.metric("평균 설명 생성 시간", "N/A")
+                                
+                                if avg_total is not None:
+                                    st.metric("평균 전체 처리 시간", f"{avg_total:.0f}ms")
+                                else:
+                                    st.metric("평균 전체 처리 시간", "N/A")
+                                
+                                if avg_answer_len is not None:
+                                    st.metric("평균 답변 길이", f"{avg_answer_len:.0f}자")
+                                else:
+                                    st.metric("평균 답변 길이", "N/A")
+                        
+                        with col2:
+                            st.markdown("#### 🔍 용어 클릭 병목 분석")
+                            if len(term_click_perf_df) > 0:
+                                # ✅ nan 값 제외하고 비율 계산
+                                valid_rows = term_click_perf_df[
+                                    term_click_perf_df["설명 생성 (ms)"].notna() & 
+                                    term_click_perf_df["전체 처리 (ms)"].notna() &
+                                    (term_click_perf_df["전체 처리 (ms)"] > 0)
+                                ]
+                                
+                                if len(valid_rows) > 0:
+                                    explanation_pct = (valid_rows["설명 생성 (ms)"] / valid_rows["전체 처리 (ms)"] * 100).mean()
+                                    st.write(f"**설명 생성 비율**: {explanation_pct:.1f}%")
+                                    
+                                    if explanation_pct > 80:
+                                        st.warning("⚠️ 설명 생성이 주요 병목입니다!")
+                                    elif explanation_pct > 50:
+                                        st.info("💡 설명 생성 시간이 전체의 절반 이상을 차지합니다.")
+                                    else:
+                                        st.success("✅ 성능이 양호합니다.")
+                                else:
+                                    st.info("📊 유효한 성능 데이터가 부족합니다.")
+                        
+                        st.markdown("#### 📋 용어 클릭 상세 성능 데이터")
+                        st.dataframe(term_click_perf_df.head(20), use_container_width=True, height=400)
+            else:
+                st.info("📊 성능 데이터가 아직 없습니다. 뉴스를 클릭하면 성능 데이터가 수집됩니다.")
+        else:
+            st.info("📊 성능 데이터를 분석할 수 없습니다. payload에 성능 정보가 없습니다.")
 
         st.markdown("### 🔄 전환 퍼널 요약")
         click_events = df_view[df_view["event_name"] == "news_click"]

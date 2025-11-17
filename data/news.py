@@ -1,5 +1,6 @@
 from typing import List, Dict
 from datetime import datetime
+import streamlit as st
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 
@@ -124,3 +125,12 @@ def collect_news() -> List[Dict]:
 
     # Supabase 실패 시 Fallback 데이터 사용
     return FALLBACK_NEWS
+
+
+@st.cache_data(ttl=300)  # 5분 캐시 (뉴스는 자주 변경되지 않음)
+def load_news_cached() -> List[Dict]:
+    """
+    뉴스 데이터를 캐싱하여 로드 (서버 전체 기준 5분 동안 재사용)
+    ✅ 최적화: st.cache_data로 서버 기준 5분 안에 들어온 모든 세션이 같은 뉴스 결과 공유
+    """
+    return collect_news() or []
