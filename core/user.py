@@ -2,8 +2,11 @@ import os
 import json
 import uuid
 import streamlit as st
+from streamlit_js_eval import streamlit_js_eval
 from core.config import USER_FILE     # 로컬에 저장될 user_info.json 파일 경로
 from core.utils import now_utc_iso    # 현재 UTC 시각을 ISO 포맷으로 반환하는 함수
+
+BROWSER_STORAGE_KEY = "ff_user_id"
 
 # ─────────────────────────────────────────────────────────────
 # 🧩 (1) 로컬 user_id 읽기
@@ -52,6 +55,53 @@ def _write_local_user_id(uid: str):
         pass  # 권한 등 문제 시 무시 (앱 실행엔 영향 없음)
 
 
+def _get_user_id_from_browser_storage():
+    """브라우저 localStorage에서 user_id 읽기"""
+    try:
+        value = streamlit_js_eval(
+            js_expressions=f"window.localStorage.getItem('{BROWSER_STORAGE_KEY}')",
+            key="get_user_id_from_storage",
+            want_output=True,
+        )
+        if isinstance(value, str):
+            value = value.strip()
+            if value and value.lower() != "null":
+                return value
+        return None
+    except Exception:
+        return None
+
+
+def _set_user_id_to_browser_storage(uid: str):
+    """브라우저 localStorage에 user_id 저장"""
+    try:
+        streamlit_js_eval(
+            js_expressions=f"window.localStorage.setItem('{BROWSER_STORAGE_KEY}', '{uid}')",
+            key=f"set_user_id_{uid}",
+            want_output=False,
+        )
+    except Exception:
+        pass
+
+
+def _set_query_param_uid(uid: str):
+    """URL 쿼리 파라미터에 uid 반영"""
+    try:
+        st.query_params["uid"] = uid
+    except Exception:
+        try:
+            st.experimental_set_query_params(uid=uid)
+        except Exception:
+            pass
+
+
+def persist_user_id(uid: str):
+    """user_id를 브라우저/로컬/URL에 동기화"""
+    _write_local_user_id(uid)
+    _set_user_id_to_browser_storage(uid)
+    _set_query_param_uid(uid)
+
+
 # ─────────────────────────────────────────────────────────────
 # 🧩 (3) user_id 생성 또는 복원
 # ─────────────────────────────────────────────────────────────
@@ -60,7 +110,7 @@ def get_or_create_user_id() -> str:
     🎯 user_id를 가져오거나 새로 생성합니다.
     순서:
       1️⃣ URL 쿼리파라미터(uid) → 외부에서 전달된 경우
-      2️⃣ 로컬 파일(user_info.json) → 이전 방문자
+      2️⃣ 브라우저 localStorage → 동일 브라우저 재방문
       3️⃣ 새 UUID 생성 → 최초 방문자
     """
 
@@ -79,44 +129,19 @@ def get_or_create_user_id() -> str:
 
     if uid_from_qs:
         # URL에 ?uid=~~~가 있으면 그걸 user_id로 사용
+        persist_user_id(uid_from_qs)
         return uid_from_qs
 
-    # 2️⃣ 로컬 캐시된 user_id 사용
-    uid_local = _read_local_user_id()
-    if uid_local:
-        # 기존 user_xxx 형식이면 UUID로 마이그레이션 (서버와 맞추기)
-        if uid_local.startswith("user_") and len(uid_local) < 36:
-            # 기존 user_xxx 형식은 서버 연결 시 자동으로 UUID로 변환됨
-            # 여기서는 그대로 반환 (서버 연결 후 _ensure_backend_user에서 자동 교체)
-            pass
-        else:
-            # UUID 형식이면 그대로 사용
-            pass
-        
-        # URL 파라미터로 다시 세팅 (새로고침 시 유지)
-        try:
-            st.query_params["uid"] = uid_local
-        except Exception:
-            try:
-                st.experimental_set_query_params(uid=uid_local)
-            except Exception:
-                pass
-        return uid_local
+    # 2️⃣ 브라우저 localStorage에 저장된 user_id 사용
+    uid_browser = _get_user_id_from_browser_storage()
+    if uid_browser:
+        persist_user_id(uid_browser)
+        return uid_browser
 
     # 3️⃣ 위 두 가지 모두 없으면 새 user_id 생성
     # 서버와 동일한 UUID 형식 사용 (36자리 UUID)
     new_uid = str(uuid.uuid4())  # UUID 형식: "7b4395ed-af96-41aa-b1ff-c24062b2986f"
-    _write_local_user_id(new_uid)             # 로컬 저장
-
-    # 생성된 user_id를 URL 파라미터에도 반영
-    try:
-        st.query_params["uid"] = new_uid
-    except Exception:
-        try:
-            st.experimental_set_query_params(uid=new_uid)
-        except Exception:
-            pass
-
+    persist_user_id(new_uid)
     return new_uid
 
 

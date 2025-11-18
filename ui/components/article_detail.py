@@ -40,6 +40,11 @@ def render():
         # ✅ 하이라이트 캐시 히트 추정: 처리 시간이 5ms 이하면 캐시 히트로 간주
         highlight_cache_hit = highlight_elapsed_ms <= 5
         
+        # ✅ 하이라이트 결과를 캐시에 저장 (재렌더링 시 즉시 사용)
+        if article_id:
+            highlight_cache_key = f"article_highlight_cache_{article_id}"
+            st.session_state[highlight_cache_key] = highlighted_content
+        
         st.markdown(highlighted_content, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         if article.get("url"):
@@ -132,15 +137,30 @@ def render():
         st.session_state.page_enter_time = datetime.now()
 
     else:
-        # 재렌더 시에는 단순 표시만 (latency 미측정)
+        # ✅ 재렌더 시에는 캐시된 하이라이트 컨텐츠 사용 (성능 최적화)
+        article_id = article.get("id")
+        highlight_cache_key = f"article_highlight_cache_{article_id}"
+        
+        # 캐시된 하이라이트 컨텐츠가 있으면 재사용 (하이라이트 처리 생략)
+        cached_highlight = st.session_state.get(highlight_cache_key)
+        
+        if cached_highlight:
+            # 캐시 히트: 하이라이트 처리 생략 (거의 0ms)
+            highlighted_content = cached_highlight
+        else:
+            # 캐시 미스: 하이라이트 처리 (하지만 이미 highlight_terms 내부 캐시 활용)
+            content = article['content']
+            highlighted_content = highlight_terms(content, article_id=str(article_id) if article_id else None)
+            
+            # 하이라이트 결과를 캐시에 저장 (다음 재렌더링 시 즉시 사용)
+            if article_id:
+                st.session_state[highlight_cache_key] = highlighted_content
+        
+        # UI 렌더링 (항상 실행하되, 하이라이트는 캐시에서 가져옴)
         st.markdown("---")
         st.header(article['title'])
         st.caption(f"📅 {article['date']}")
         st.markdown('<div class="article-content">', unsafe_allow_html=True)
-        # ✅ 성능 개선: article_id를 전달하여 캐싱 활용 (캐시 히트 시 거의 즉시)
-        article_id = article.get("id")
-        content = article['content']
-        highlighted_content = highlight_terms(content, article_id=str(article_id) if article_id else None)
         st.markdown(highlighted_content, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         if article.get("url"):
@@ -155,16 +175,34 @@ def render():
         # ✅ 성능 측정: 뒤로가기 처리 시간
         back_start = time.time()
         
+        # ✅ 로그 중복 제거: end_view_timer() 내부 로그와 통합
+        duration_sec = None
+        max_depth_pct = None
         if st.session_state.get("detail_enter_logged"):
-            end_view_timer()
+            # end_view_timer() 내부에서 계산하는 정보를 직접 가져옴
+            if "view_start_time" in st.session_state:
+                duration_sec = time.time() - st.session_state["view_start_time"]
+            news_id = st.session_state.get("view_news_id", article.get("id"))
+            max_depth_pct = st.session_state.get("detail_max_depth_pct", 0.0)
+            
+            # end_view_timer() 호출 (내부 로그는 기록하지 않도록 수정 필요하지만,
+            # 일단 여기서 통합 로그로 기록하므로 중복은 제거됨)
+            # 세션 상태만 정리
+            for k in ("view_start_time", "view_news_id", "detail_max_depth_pct"):
+                if k in st.session_state:
+                    del st.session_state[k]
+            
             st.session_state.detail_enter_logged = False
         
+        # ✅ 통합 로그 1번만 기록 (view_duration + news_detail_back 정보 포함)
         log_event(
             "news_detail_back", 
             news_id=article.get("id"), 
             surface="detail",
             payload={
-                "back_process_ms": int((time.time() - back_start) * 1000)
+                "back_process_ms": int((time.time() - back_start) * 1000),
+                "duration_sec": round(duration_sec, 2) if duration_sec is not None else None,
+                "max_depth_pct": round(max_depth_pct, 1) if max_depth_pct is not None else None,
             }
         )
         

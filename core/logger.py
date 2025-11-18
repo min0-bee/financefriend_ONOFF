@@ -146,18 +146,9 @@ def _save_server_user_id(server_user_id: str) -> None:
     st.session_state["backend_user_id"] = server_user_id
     st.session_state["user_id"] = server_user_id
     
-    # 서버 UUID를 로컬에 저장
-    from core.user import _write_local_user_id
-    _write_local_user_id(server_user_id)
-    
-    # URL 파라미터도 업데이트
-    try:
-        st.query_params["uid"] = server_user_id
-    except:
-        try:
-            st.experimental_set_query_params(uid=server_user_id)
-        except:
-            pass
+    # 서버 UUID를 브라우저/로컬에 동기화
+    from core.user import persist_user_id
+    persist_user_id(server_user_id)
 
 
 def _extract_user_id_from_response(users: Any) -> Optional[str]:

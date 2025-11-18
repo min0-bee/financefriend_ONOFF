@@ -2,6 +2,7 @@ import os
 import csv
 import json
 import uuid
+import re
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timezone
@@ -327,3 +328,161 @@ def render_llm_diagnostics():
 # 👉 호출 위치 예시
 # with st.sidebar:
 #     render_llm_diagnostics()
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔗 (5) URL 감지 및 추출 유틸리티
+# ─────────────────────────────────────────────────────────────
+
+def extract_urls_from_text(text: str) -> list[str]:
+    """
+    텍스트에서 URL을 추출합니다.
+    
+    Args:
+        text: URL이 포함될 수 있는 텍스트
+        
+    Returns:
+        발견된 URL 리스트
+    """
+    if not text:
+        return []
+    
+    # URL 패턴 (http/https로 시작하는 URL)
+    url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+[^\s<>"{}|\\^`\[\].,;!?]'
+    urls = re.findall(url_pattern, text)
+    
+    return urls
+
+
+def is_url(text: str) -> bool:
+    """
+    텍스트가 URL인지 확인합니다.
+    
+    Args:
+        text: 확인할 텍스트
+        
+    Returns:
+        URL이면 True, 아니면 False
+    """
+    if not text or not text.strip():
+        return False
+    
+    text = text.strip()
+    urls = extract_urls_from_text(text)
+    
+    # 텍스트 전체가 URL인지 확인 (앞뒤 공백 제거 후 비교)
+    return len(urls) == 1 and text.strip() == urls[0]
+
+
+# ─────────────────────────────────────────────────────────────
+# 📰 (6) 기사 찾기 요청 감지 및 키워드 추출
+# ─────────────────────────────────────────────────────────────
+
+def detect_article_search_request(text: str) -> tuple[bool, str]:
+    """
+    사용자 입력이 기사 찾기 요청인지 감지하고 키워드를 추출합니다.
+    
+    Args:
+        text: 사용자 입력 텍스트
+        
+    Returns:
+        (is_request, keyword) 튜플
+        - is_request: 기사 찾기 요청이면 True
+        - keyword: 추출된 키워드 (없으면 빈 문자열)
+    """
+    if not text or not text.strip():
+        return False, ""
+    
+    text = text.strip()
+    
+    # 기사 찾기 패턴들 (확장)
+    search_patterns = [
+        # "~에 대해 기사 보여줘" 패턴
+        r'(.+?)(?:에\s*대해|에\s*관해|에\s*대한|에\s*관한).*?기사.*?(?:보여|찾아|알려|알고싶|보고싶)',
+        r'(.+?)(?:에\s*대해|에\s*관해|에\s*대한|에\s*관한).*?(?:기사|뉴스|기사.*?보여|뉴스.*?보여)',
+        r'(.+?)(?:기사|뉴스).*?(?:보여|찾아|알려|보고싶|알고싶)',
+        r'(.+?)(?:에\s*대해|에\s*관해).*?(?:더\s*알고싶|더\s*보고싶|더\s*알려)',
+        r'(.+?)(?:에\s*대한|에\s*관한).*?(?:기사|뉴스)',
+        # "~에 대해 알고싶어" 패턴 (기사/뉴스 없이도 매칭)
+        r'(.+?)(?:에\s*대해|에\s*관해).*?알고싶',
+        r'(.+?)(?:에\s*대해|에\s*관해).*?보고싶',
+        # "~가 더 필요해", "~관련 뉴스" 패턴 추가
+        r'(.+?)(?:에?\s*관련|에?\s*관한|에?\s*대한).*?(?:뉴스|기사).*?(?:더\s*필요|더\s*보고싶|더\s*알고싶|가져와|찾아)',
+        r'(.+?)(?:에?\s*관련|에?\s*관한|에?\s*대한).*?(?:뉴스|기사).*?필요',
+        r'(.+?)(?:에?\s*관련|에?\s*관한|에?\s*대한).*?뉴스',
+        r'(.+?)(?:에?\s*관련|에?\s*관한|에?\s*대한).*?기사',
+        r'(.+?)(?:가|이|을|를).*?(?:더\s*필요|더\s*보고싶|더\s*알고싶)',
+        r'(.+?)(?:에?\s*대해|에?\s*관해).*?(?:뉴스|기사).*?(?:더\s*필요|더\s*보고싶|더\s*알고싶)',
+    ]
+    
+    for pattern in search_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            keyword = match.group(1).strip()
+            # 조사 제거 (은/는/이/가/을/를/에/의 등)
+            keyword = re.sub(r'\s*(은|는|이|가|을|를|에|의|와|과|로|으로)\s*$', '', keyword)
+            if keyword and len(keyword) > 1:  # 최소 2글자 이상
+                return True, keyword
+    
+    return False, ""
+
+
+def search_related_article(articles: list[dict], keyword: str) -> dict | None:
+    """
+    뉴스 리스트에서 키워드와 관련된 기사를 찾습니다.
+    
+    Args:
+        articles: 뉴스 기사 리스트
+        keyword: 검색 키워드
+        
+    Returns:
+        가장 관련성 높은 기사 (없으면 None)
+    """
+    if not articles or not keyword:
+        return None
+    
+    keyword_lower = keyword.lower()
+    best_match = None
+    best_score = 0
+    
+    for article in articles:
+        score = 0
+        
+        # 제목에서 매칭 (가장 높은 점수)
+        title = article.get("title", "").lower()
+        if keyword_lower in title:
+            score += 10
+            # 정확히 일치하면 추가 점수
+            if keyword_lower == title:
+                score += 5
+        
+        # 요약에서 매칭
+        summary = article.get("summary", "").lower()
+        if keyword_lower in summary:
+            score += 5
+        
+        # 본문에서 매칭
+        content = article.get("content", "").lower()
+        if keyword_lower in content:
+            score += 2
+            # 본문에서 여러 번 나오면 추가 점수
+            count = content.count(keyword_lower)
+            if count > 1:
+                score += min(count - 1, 3)  # 최대 3점 추가
+        
+        # 키워드의 단어들이 각각 매칭되는지 확인
+        keyword_words = keyword_lower.split()
+        if len(keyword_words) > 1:
+            matched_words = sum(1 for word in keyword_words if word in title or word in summary)
+            if matched_words > 0:
+                score += matched_words * 2
+        
+        if score > best_score:
+            best_score = score
+            best_match = article
+    
+    # 최소 점수 이상이어야 매칭으로 인정
+    if best_score >= 2:
+        return best_match
+    
+    return None

@@ -607,28 +607,20 @@ def render():
     """
     서버에서 데이터를 가져와서 로그 뷰어 렌더링
     
-    ⚠️ 관리자 권한이 필요합니다.
+    ✅ 멘토링용: 모든 사용자가 접근 가능
     """
-    # 관리자 권한 체크
-    from core.user import is_admin_user
     from core.logger import _get_user_id
-    
-    current_user_id = _get_user_id()
-    if not is_admin_user(current_user_id):
-        st.error("⚠️ 접근 권한이 없습니다. 로그 뷰어는 관리자만 접근할 수 있습니다.")
-        st.info("💡 관리자 계정으로 접속하거나 관리자에게 문의하세요.")
-        return
     
     st.markdown("## 📊 로그 뷰어")
 
-    # event_log 중심 모드 (Supabase에서 직접 가져오기)
-    if not API_ENABLE and SUPABASE_ENABLE:
-        st.info("📊 event_log 중심 모드: Supabase에서 데이터를 가져옵니다.")
+    # event_log 중심 모드 (Supabase에서 직접 가져오기) - 프로덕션 환경에서는 숨김
+    # if not API_ENABLE and SUPABASE_ENABLE:
+    #     st.info("📊 event_log 중심 모드: Supabase에서 데이터를 가져옵니다.")
 
-        viewer_user_id = _get_user_id()
+    viewer_user_id = _get_user_id()
 
-        with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
-            df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
+    with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
+        df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
 
         if df.empty:
             st.info("📭 아직 이벤트 로그가 없습니다. 앱을 사용하면 데이터가 수집됩니다.")
