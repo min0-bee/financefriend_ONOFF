@@ -2,12 +2,45 @@
 import re
 import time
 import textwrap
+import os
+import base64
 import streamlit as st
 from streamlit.components.v1 import html as st_html
 from core.logger import log_event
 from rag.glossary import explain_term, search_terms_by_rag
 from core.utils import llm_chat
 from persona.persona import albwoong_persona_reply, generate_structured_persona_reply
+
+
+def get_albwoong_avatar_base64():
+    """알부엉 이미지를 Base64로 인코딩하여 반환"""
+    possible_paths = [
+        "assets/albwoong.png",
+        "assets/albueong.png",
+        "assets/albuong.png",
+        "assets/albwoong.jpg",
+        "assets/albwoong.svg",
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as img_file:
+                    encoded = base64.b64encode(img_file.read()).decode()
+                    ext = path.split(".")[-1].lower()
+                    if ext == "svg":
+                        mime_type = "image/svg+xml"
+                    elif ext == "png":
+                        mime_type = "image/png"
+                    elif ext == "jpg" or ext == "jpeg":
+                        mime_type = "image/jpeg"
+                    else:
+                        mime_type = "image/png"
+                    return f"data:{mime_type};base64,{encoded}"
+            except Exception:
+                continue
+    
+    return ""
 
 
 # 일반 질문에 대한 LLM 응답
@@ -92,7 +125,11 @@ def render(terms: dict[str, dict], use_openai: bool = False):
         )
         avatar_html = ""
         if role_class == "assistant":
-            avatar_html = '<div class="chat-avatar chat-avatar--assistant"></div>'
+            avatar_img_src = get_albwoong_avatar_base64()
+            if avatar_img_src:
+                avatar_html = f'''<div class="chat-avatar chat-avatar--assistant"><img src="{avatar_img_src}" alt="알부엉" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;"></div>'''
+            else:
+                avatar_html = '<div class="chat-avatar chat-avatar--assistant"></div>'
 
         messages_html.append(
             textwrap.dedent(
@@ -445,12 +482,12 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                     )
                     break
 
-        # 3) 금융 용어가 아닌 일반 질문: 질문 유형에 따라 답변 형식 결정
+        # 3) 금융 용어가 아닌 일반 질문: 질문 패턴에 따라 답변 형식 결정
         if explanation is None and not is_financial_question:
             # 조사 제거 함수
             def remove_particles(term: str) -> str:
                 """
-                용어에서 조사(가, 이, 는, 을, 를, 에, 의 등) 제거
+                용어에서 조사(가, 이, 을, 를, 은, 는, 와, 과, 로, 의 등) 제거
                 
                 Args:
                     term: 조사가 포함된 용어 (예: "융자가")
@@ -458,7 +495,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                 Returns:
                     조사가 제거된 용어 (예: "융자")
                 """
-                particles = ['가', '이', '는', '을', '를', '에', '의', '와', '과', '로', '으로', '도', '만', '부터', '까지', '에서']
+                particles = ['가', '이', '을', '를', '은', '는', '와', '과', '로', '의', '에', '에서', '부터', '까지', '서', '으로', '도', '만']
                 for particle in particles:
                     if term.endswith(particle):
                         term = term[:-len(particle)]
@@ -467,11 +504,11 @@ def render(terms: dict[str, dict], use_openai: bool = False):
             
             # 사용자 입력에서 용어 추출 시도 (예: "융자가 뭐야?" -> "융자", "융자" -> "융자")
             extracted_term = None
-            # 질문 패턴에서 용어 추출 (예: "~가 뭐야?", "~이 뭐야?", "~는?", "~에 대해", "~이란?")
+            # 질문 패턴에서 용어 추출 (예: "~가 뭐야?", "~이 뭐야?", "~는?", "~이란?", "~란?")
             patterns = [
-                r"([가-힣a-zA-Z0-9]+)(?:가|이|는|을|를|에|의)?\s*(?:뭐야|무엇|무엇인가|무엇이야|무엇인지|란|이란|에 대해|에 대해서)",
-                r"(?:뭐야|무엇|무엇인가|무엇이야|무엇인지|란|이란|에 대해|에 대해서)\s*([가-힣a-zA-Z0-9]+)",
-                r"([가-힣a-zA-Z0-9]+)\s*(?:에 대해|에 대해서|이란|란)",
+                r"([가-힣a-zA-Z0-9]+)(?:가|이|은|는|을|를)?\s*(?:뭐야|무엇|무엇인지|무엇인가|무엇이야|무엇입니까|이야|인가|이란|란|이냐|냐|에 대해|에 대해서)",
+                r"(?:뭐야|무엇|무엇인지|무엇인가|무엇이야|무엇입니까|이야|인가|이란|란|이냐|냐|에 대해|에 대해서)\s*([가-힣a-zA-Z0-9]+)",
+                r"([가-힣a-zA-Z0-9]+)\s*(?:이란|란|이야|인가|에 대해|에 대해서)",
             ]
             for pattern in patterns:
                 match = re.search(pattern, user_input, re.IGNORECASE)
@@ -479,69 +516,69 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                     extracted_term = match.group(1).strip()
                     # 조사 제거
                     extracted_term = remove_particles(extracted_term)
-                    # 너무 짧거나 긴 단어는 제외 (1~10자)
+                    # 너무 짧거나 길면 용어로 간주하지 않음 (1~10자)
                     if 1 <= len(extracted_term) <= 10:
                         break
                     else:
                         extracted_term = None
             
-            # 질문 패턴으로 추출 실패 시, 입력이 짧은 단어 하나인지 확인 (예: "융자", "융자가")
+            # 질문 패턴으로 추출 실패 시 입력이 짧은 용어 하나인지 확인 (예: "융자", "융자가")
             if not extracted_term:
-                # 공백 없이 1~15자의 단어만 있는지 확인 (조사 포함 고려)
+                # 공백 없이 1~15자의 용어인지 확인 (조사 포함 고려)
                 cleaned_input = user_input.strip()
                 if re.match(r'^[가-힣a-zA-Z0-9]{1,15}$', cleaned_input):
                     extracted_term = remove_particles(cleaned_input)
-                    # 조사 제거 후 너무 짧으면 무시
+                    # 조사 제거 후 너무 짧으면 용어로 간주하지 않음
                     if len(extracted_term) < 1:
                         extracted_term = None
             
-            # 질문 유형 판단: 금융 용어 질문인지 일반 대화인지
+            # 질문 패턴 판단: 금융 용어 질문인지 일반 질문인지
             is_term_question = False
             if extracted_term:
                 # 금융 관련 키워드 체크
                 financial_keywords = [
                     '금융', '투자', '주식', '금리', '환율', '배당', '채권', '은행', '예금', '적금',
                     '대출', '이자', '경제', '시장', '주가', '코스피', '원화', '달러', '부동산',
-                    '세금', '보험', '펀드', '자산', '재무', '통화', '정책', '융자', '관세', '인플레이션',
-                    '디플레이션', 'GDP', 'CPI', 'PER', 'PBR', 'ROE', 'ROA', '유동성', '인수', '합병'
+                    '세금', '보험', '펀드', '자산', '재무', '통화', '정책', '용어', '융자', '관세', '인플레이션',
+                    '디플레이션', 'GDP', 'CPI', 'PER', 'PBR', 'ROE', 'ROA', '유동성', '이익률', '수익률', '인수', '합병'
                 ]
-                # 추출한 용어가 금융 키워드와 유사하거나, 질문에 금융 키워드가 포함되어 있으면 금융 용어 질문으로 판단
+                # 추출된 용어가 금융 키워드를 포함하는지 또는 질문이 금융 키워드를 포함하는지 확인
                 has_financial_keyword = any(kw in user_input for kw in financial_keywords) or any(kw in extracted_term for kw in financial_keywords)
-                # 용어 설명 질문 패턴 체크
-                is_definition_question = bool(re.search(r'(?:뭐야|무엇|무엇인가|무엇이야|무엇인지|란|이란|에 대해|에 대해서|설명|알려줘)', user_input, re.IGNORECASE))
+                # 용어 정의 질문 패턴 체크
+                is_definition_question = bool(re.search(r'(?:뭐야|무엇|무엇인지|무엇인가|무엇이야|무엇입니까|이야|인가|이란|란|이냐|냐|정의|설명해줘|에 대해|에 대해서)', user_input, re.IGNORECASE))
                 
-                # 키워드나 질문 패턴으로 판단되지 않으면 RAG 유사도 검색으로 판단
+                # 키워드나 질문 패턴으로 판단할 수 없으면 RAG 검색으로 확인
                 if not has_financial_keyword and not is_definition_question:
-                    # RAG에 없는 단어를 임베딩해서 RAG의 경제 단어들과 유사도 검색
+                    # RAG에서 찾은 용어로 확인해보고 RAG에서 금융 용어만 검색
                     if st.session_state.get("rag_initialized", False):
                         try:
                             rag_results = search_terms_by_rag(extracted_term, top_k=1, include_distances=True)
                             if rag_results:
                                 distance = rag_results[0].get('_distance')
-                                # 유사도 거리 임계값 (낮을수록 유사, 코사인 거리 기준 0~2)
-                                # 0.5 이하면 경제 단어로 판단 (경험적 값, 필요시 조정)
+                                # 거리 정보의 유사도 점수 확인 (낮을수록 유사, 거리는 0~2)
+                                # 0.5 이하면 금융 용어로 판단 (임의로 설정한 임계값)
                                 SIMILARITY_THRESHOLD = 0.5
                                 if distance is not None and distance <= SIMILARITY_THRESHOLD:
                                     is_term_question = True
                         except Exception as e:
-                            # RAG 검색 실패 시 무시하고 계속 진행
+                            # RAG 검색 실패 시 그냥 일반 처리
                             pass
                 else:
                     is_term_question = True
             
-            # 금융 용어 질문이면 구조화된 형식, 일반 대화면 자연스러운 형식
+            # 금융 용어 질문이면 구조화된 형식, 일반 질문이면 자연스러운 대화 형식
             try:
                 if is_term_question:
                     # 금융 용어 질문: 구조화된 형식 (📘 정의, 💡 영향, 🌟 비유)
                     explanation = generate_structured_persona_reply(
                         user_input=user_input,
-                        term=extracted_term,  # 추출한 용어 전달
+                        term=extracted_term,  # 추출된 용어 전달
                         context=None,
                         temperature=0.3
                     )
                     api_info = {"via": "structured_persona"}
                 else:
-                    # 일반 대화: 자연스러운 형식 (말투만 알부엉 톤)
+                    # 일반 질문: 자연스러운 대화 형식 (자유로운 답변)
                     explanation = albwoong_persona_reply(
                         user_input=user_input,
                         term=None,
@@ -550,7 +587,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                     )
                     api_info = {"via": "persona_natural"}
             except Exception as e:
-                # LLM 호출 실패 시 fallback
+                # LLM 연결 실패 시 fallback
                 try:
                     explanation = albwoong_persona_reply(user_input)
                     api_info = {"via": "persona_fallback", "error": str(e)}
