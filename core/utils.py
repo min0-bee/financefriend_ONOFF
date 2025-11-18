@@ -140,7 +140,7 @@ def get_openai_client(api_key: str = None):
     return OpenAI(api_key=key)
 
 
-def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: int = 512, return_metadata: bool = False):
+def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: int = 512, return_metadata: bool = False, stream: bool = False):
     """
     💬 ChatGPT (Chat Completions API) 호출 헬퍼 함수
     --------------------------------------------------
@@ -165,11 +165,14 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
             모델이 생성할 최대 토큰 수 (응답 길이 제한)
         return_metadata : bool, optional
             True면 응답과 함께 메타데이터(토큰 사용량, 모델명 등)도 반환
+        stream : bool, optional
+            True면 스트리밍 응답을 반환 (제너레이터)
 
     ✅ 반환값:
-        str 또는 tuple : 
-            - return_metadata=False: 모델이 생성한 텍스트 응답 (문자열)
-            - return_metadata=True: (응답 텍스트, 메타데이터 딕셔너리)
+        str 또는 tuple 또는 generator : 
+            - stream=False, return_metadata=False: 모델이 생성한 텍스트 응답 (문자열)
+            - stream=False, return_metadata=True: (응답 텍스트, 메타데이터 딕셔너리)
+            - stream=True: 제너레이터 (각 델타를 yield)
               메타데이터 예시: {
                   "model": "gpt-4o-mini",
                   "tokens": {"input": 150, "output": 200, "total": 350},
@@ -193,7 +196,45 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
     # ✅ 3. 모델 지정 (직접 전달 없으면 기본값 사용)
     model = model or DEFAULT_OPENAI_MODEL
 
-    # ✅ 4. ChatCompletions API 호출
+    # ✅ 4. 스트리밍 모드 처리
+    if stream:
+        def stream_generator():
+            response_text = ""
+            usage = None
+            with client.chat.completions.stream(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ) as stream_resp:
+                for event in stream_resp:
+                    if event.type == "message.delta":
+                        delta = event.delta.content or ""
+                        if delta:
+                            response_text += delta
+                            yield delta
+                    elif event.type == "message.completed":
+                        usage = event.response.usage  # type: ignore[attr-defined]
+            
+            # 스트리밍 완료 후 메타데이터 반환 (return_metadata=True인 경우)
+            if return_metadata:
+                metadata = {
+                    "model": model,
+                    "tokens": {
+                        "input": usage.prompt_tokens if usage else 0,
+                        "output": usage.completion_tokens if usage else 0,
+                        "total": usage.total_tokens if usage else 0
+                    },
+                    "api_params": {
+                        "temperature": temperature,
+                        "max_tokens": max_tokens
+                    }
+                }
+                yield ("__METADATA__", metadata)
+        
+        return stream_generator()
+
+    # ✅ 5. 일반 모드: ChatCompletions API 호출
     #   - messages: 대화 이력
     #   - temperature: 창의성 조절
     #   - max_tokens: 응답 길이 제한
@@ -204,10 +245,10 @@ def llm_chat(messages, model: str = None, temperature: float = 0.3, max_tokens: 
         max_tokens=max_tokens,
     )
 
-    # ✅ 5. 응답에서 모델의 텍스트 추출
+    # ✅ 6. 응답에서 모델의 텍스트 추출
     response_text = resp.choices[0].message.content.strip()
     
-    # ✅ 6. 메타데이터 수집 (에이전트 수집용)
+    # ✅ 7. 메타데이터 수집 (에이전트 수집용)
     if return_metadata:
         usage = resp.usage
         metadata = {

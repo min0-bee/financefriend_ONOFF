@@ -1079,8 +1079,17 @@ def initialize_rag_system(is_background: bool = False):
 # - 사용자 질문을 벡터화하여 유사한 용어 검색
 # - 상위 k개의 관련 용어 반환
 # ─────────────────────────────────────────────────────────────
-def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
-    """RAG를 사용하여 질문과 관련된 금융 용어 검색"""
+def search_terms_by_rag(query: str, top_k: int = 3, include_distances: bool = False) -> List[Dict]:
+    """RAG를 사용하여 질문과 관련된 금융 용어 검색
+    
+    Args:
+        query: 검색할 질문 또는 용어
+        top_k: 반환할 상위 k개 결과
+        include_distances: True일 경우 거리 정보도 포함하여 반환
+    
+    Returns:
+        검색된 용어 메타데이터 리스트 (include_distances=True일 경우 거리 정보 포함)
+    """
 
     if not st.session_state.get("rag_initialized", False):
         return []
@@ -1113,17 +1122,27 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
             if perf_enabled:
                 step_start = _perf_step(perf_enabled, perf_steps, "encode", step_start)
 
+        # 거리 정보 포함 여부에 따라 include 파라미터 설정
+        include = ["metadatas"]
+        if include_distances:
+            include.append("distances")
+
         results = collection.query(
             query_embeddings=[query_embedding.tolist()],
-            n_results=top_k
+            n_results=top_k,
+            include=include
         )
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "query", step_start)
 
         matched_terms = []
         if results and results['metadatas']:
-            for metadata in results['metadatas'][0]:
-                matched_terms.append(metadata)
+            for i, metadata in enumerate(results['metadatas'][0]):
+                term_data = metadata.copy()
+                # 거리 정보가 있으면 추가
+                if include_distances and results.get('distances') and results['distances'][0]:
+                    term_data['_distance'] = results['distances'][0][i]
+                matched_terms.append(term_data)
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "format", step_start)
             perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2), "info": {"top_k": top_k, "returned": len(matched_terms)}})

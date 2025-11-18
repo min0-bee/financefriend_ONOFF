@@ -150,20 +150,37 @@ _FEWSHOT_GENERAL: List[Dict[str, str]] = [
             "간단히 말하면: URL=주소 / 링크=클릭요소"
         ),
     },
+    # 예시 5: 일반 대화 (인사, 감사 등)
+    {
+        "role": "user",
+        "content": "안녕"
+    },
+    {
+        "role": "assistant",
+        "content": "안녕! 오늘도 신문을 품에 안고 왔어. 궁금한 경제 이야기가 있으면 편하게 물어봐!"
+    },
+    {
+        "role": "user",
+        "content": "고마워"
+    },
+    {
+        "role": "assistant",
+        "content": "천만에! 도움이 됐다면 다행이야. 더 궁금한 거 있으면 언제든 물어봐!"
+    },
 ]
 
 # ─────────────────────────────────────────────────────────────
-# 새 구조화 응답 포맷 정의
+# 새 구조화 응답 포맷 정의 (초보자용 3~4 문장 형식)
 # ─────────────────────────────────────────────────────────────
 _STRUCTURED_OUTPUT_GUIDE = (
     "## 기본 출력 포맷 (항상 동일)\n"
     "- 사용자는 반말 톤만 본다.\n"
-    "- 출력 결과는 JSON 하나로만 반환하고 키는 summary, detail, impact, analogy, reminder 다섯 개다.\n"
-    "- summary: 한 줄 핵심 요약 (20자 내외, 용어 핵심 의미 포함)\n"
-    "- detail: 용어 뜻과 배경을 2문장으로 설명 (왜 그런지 포함)\n"
-    "- impact: 생활 속 영향 2가지를 한 문장씩 구체적으로 제시 (예: 대출 이자, 월급 등)\n"
-    "- analogy: 일상 비유 1개. '[대상]처럼 ~. ~' 형식으로 2문장을 작성해, 두 번째 문장에 이유/비교 설명 포함.\n"
-    "- reminder: 마지막 한 줄 마무리 멘트\n"
+    "- 출력 결과는 JSON 하나로만 반환하고 키는 definition, impact, analogy 세 개를 사용한다.\n"
+    "- definition: 용어의 핵심 정의를 1~2 문장으로 간단하게 설명 (초보자가 바로 이해할 수 있게)\n"
+    "- impact: 우리 생활에 어떤 영향을 주는지 3~4 문장으로 구체적으로 설명 (예: 대출 이자, 월급, 물가 등 실생활 예시 포함)\n"
+    "- analogy: 일상 비유를 3~4 문장으로 설명. '[대상]처럼 ~. ~' 형식으로 작성하고, 왜 그렇게 느끼는지 이유를 포함\n"
+    "- 전문 용어는 괄호()로 짧게 보조 설명 추가\n"
+    "- 구체적이고 실용적인 예시를 포함하여 초보자도 바로 이해할 수 있게 작성\n"
     "- 모든 값은 문자열이고 이스케이프 없이 순수 텍스트만 넣는다.\n"
     "- JSON 이외의 텍스트나 주석은 절대 추가하지 않는다."
 )
@@ -229,7 +246,29 @@ def albwoong_persona_reply(
 ) -> str:
     """
     일반 질문 또는 RAG 참고자료 기반 질문 → 일관된 템플릿의 알부엉 답변 생성
+    - term이 있으면: 구조화된 형식 사용
+    - term이 없으면: 자연스러운 대화 형식 사용
     """
+    # term이 없으면 자연스러운 대화 형식으로 답변
+    if not term:
+        try:
+            today = _today_kst_str()
+            base_prompt = _system_prompt(today)
+            sys = {"role": "system", "content": base_prompt}
+            dev = {"role": "system", "content": _DEV_RULES}
+            usr = {"role": "user", "content": user_input}
+            
+            # 일반 대화 형식으로 답변 (few-shot 예제 포함)
+            messages = [sys, dev, *_FEWSHOT_GENERAL, usr]
+            raw = llm_chat(messages, temperature=temperature, max_tokens=500)
+            return raw.strip()
+        except Exception as e:
+            return (
+                f"죄송해! 지금은 답변을 생성하기 어려워. "
+                f"다시 시도하거나 다른 질문을 해줘! (오류: {e})"
+            )
+    
+    # term이 있으면 구조화된 형식 사용
     return generate_structured_persona_reply(
         user_input=user_input,
         term=term,
@@ -386,24 +425,25 @@ def _build_messages_for_structured_reply(
 
 def _parse_structured_response(raw: str) -> Dict[str, str]:
     default = {
-        "summary": "",
-        "detail": "",
+        "definition": "",
         "impact": "",
         "analogy": "",
-        "reminder": "더 궁금한 거 있으면 편하게 물어봐!",
     }
     if not raw:
         return default
     try:
-        return {**default, **json.loads(raw)}
+        parsed = json.loads(raw)
+        return {**default, **parsed}
     except Exception:
         match = _STRUCTURED_JSON_PATTERN.search(raw)
         if match:
             try:
-                return {**default, **json.loads(match.group())}
+                parsed = json.loads(match.group())
+                return {**default, **parsed}
             except Exception:
                 pass
-    default["summary"] = raw.strip()
+    # JSON 파싱 실패 시 원문을 definition으로 사용
+    default["definition"] = raw.strip()
     return default
 
 
@@ -421,28 +461,43 @@ def _format_structured_output(data: Dict[str, str], term: Optional[str], prompt:
     else:
         opener = "신문에서 봤는데~ 방금 이야기 쉽게 풀어볼게!"
 
-    summary = (data.get("summary") or "").strip()
-    detail = (data.get("detail") or "").strip()
+    definition = (data.get("definition") or "").strip()
     impact = (data.get("impact") or "").strip()
     analogy = (data.get("analogy") or "").strip()
-    reminder = (data.get("reminder") or "").strip() or "더 궁금한 거 있으면 편하게 물어봐!"
 
-    if "물어봐" not in reminder:
-        reminder += " 더 궁금한 거 있으면 편하게 물어봐!"
+    # fallback 메시지
+    if not definition:
+        definition = "쉽게 말하면, 어렵게 느껴지는 개념을 일상 언어로 풀어낸 거야."
+    if not impact:
+        impact = "우리 생활의 돈 흐름과 소비에 직접적인 영향을 줘."
+    if not analogy:
+        analogy = "일상에서 쉽게 접할 수 있는 것에 비유하면 더 이해하기 쉬울 거야."
 
-    definition = summary or detail or "쉽게 말하면, 어렵게 느껴지는 개념을 일상 언어로 풀어낸 거야."
-    impact_text = impact or "우리 생활의 돈 흐름과 소비에 직접적인 영향을 줘."
-
+    # 구조화된 형식으로 출력 (각 섹션 3~4 문장)
     lines = [
         opener,
-        f"📘 정의: {definition}",
-        f"💡 영향: {impact_text}",
+        "",
+        f"📘 정의",
+        "",
+        definition,
+        "",
+        f"💡 영향",
+        "",
+        impact,
     ]
 
     if analogy:
-        lines.append(f"🌟 비유: {analogy}")
+        lines.extend([
+            "",
+            f"🌟 비유",
+            "",
+            analogy,
+        ])
 
-    lines.append(reminder)
+    lines.extend([
+        "",
+        "더 궁금한 거 있으면 편하게 물어봐!",
+    ])
     return "\n".join(lines)
 
 
@@ -454,14 +509,18 @@ def generate_structured_persona_reply(
 ) -> str:
     """
     구조화된 템플릿을 따르는 알부엉 답변 생성 (RAG/일반 공용)
+    - term이 있으면: 구조화된 형식 (📘 정의, 💡 영향, 🌟 비유) - 각 섹션 3~4 문장으로 초보자용 간결하게
+    - term이 없어도: 구조화된 형식으로 답변 (RAG 답변과 일관성 유지)
     """
+    # term이 없어도 구조화된 형식으로 답변 (RAG 답변과 일관성 유지)
+    # term이 있으면 구조화된 형식으로 답변 (정의, 영향, 비유 각 3~4 문장)
     try:
         messages = _build_messages_for_structured_reply(
             user_input=user_input,
-            term=term,
+            term=term,  # term이 없어도 None으로 전달하여 구조화된 형식으로 답변
             context=context,
         )
-        raw = llm_chat(messages, temperature=temperature, max_tokens=700)
+        raw = llm_chat(messages, temperature=temperature, max_tokens=600)
         structured = _parse_structured_response(raw)
         return _format_structured_output(structured, term, user_input)
     except Exception as e:
