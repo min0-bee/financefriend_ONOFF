@@ -3412,8 +3412,56 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     # ========== E. 성능 분석 ==========
     st.markdown("#### ⚡ 성능 분석")
     
-    # 1. 하이라이트 latency 히스토그램
-    if highlight_latencies and px is not None:
+    # 하이라이트 latency 데이터 추출 (캐시 히트/미스 구분)
+    detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
+    highlight_latencies_cache_miss = []  # 캐시 미스만
+    highlight_latencies_cache_hit = []   # 캐시 히트만
+    highlight_latencies = []  # 전체 (fallback용)
+    
+    for idx, row in detail_events.iterrows():
+        perf_data = _extract_perf_data(row)
+        if perf_data and isinstance(perf_data, dict):
+            highlight_ms = perf_data.get("highlight_ms")
+            cache_hit = perf_data.get("highlight_cache_hit", False)
+            
+            if highlight_ms is not None:
+                try:
+                    highlight_value = float(highlight_ms)
+                    # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
+                    if highlight_value > 0 and highlight_value < 100000:  # 100초 이상은 제외
+                        highlight_latencies.append(highlight_value)
+                        # 캐시 히트/미스 구분
+                        if cache_hit:
+                            highlight_latencies_cache_hit.append(highlight_value)
+                        else:
+                            highlight_latencies_cache_miss.append(highlight_value)
+                except (ValueError, TypeError):
+                    pass
+    
+    # 1. 하이라이트 latency 히스토그램 (캐시 히트/미스 구분)
+    # 캐시 미스만 표시 (실제 성능 문제 파악용)
+    if highlight_latencies_cache_miss and px is not None:
+        fig5 = px.histogram(
+            x=highlight_latencies_cache_miss,
+            nbins=30,
+            title="하이라이트 Latency 분포 (캐시 미스만)",
+            labels={"x": "Latency (ms)", "count": "빈도"}
+        )
+        # 경고 영역 표시 (2초 이상)
+        fig5.add_vline(x=2000, line_dash="dash", line_color="red", annotation_text="경고 영역 (2초)")
+        st.plotly_chart(fig5, use_container_width=True)
+        
+        # 캐시 히트 분포도 별도로 표시 (참고용)
+        if highlight_latencies_cache_hit and len(highlight_latencies_cache_hit) > 0:
+            fig5b = px.histogram(
+                x=highlight_latencies_cache_hit,
+                nbins=30,
+                title="하이라이트 Latency 분포 (캐시 히트만, 참고용)",
+                labels={"x": "Latency (ms)", "count": "빈도"}
+            )
+            st.plotly_chart(fig5b, use_container_width=True)
+    elif highlight_latencies and px is not None:
+        # 캐시 정보가 없는 경우 전체 데이터 표시
         fig5 = px.histogram(
             x=highlight_latencies,
             nbins=30,
