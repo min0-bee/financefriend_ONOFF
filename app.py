@@ -137,36 +137,20 @@ def main():
         st.session_state["background_init_done"] = True
 
     st.session_state.setdefault("main_view", "뉴스/챗봇")
-    
-    # 관리자 권한 체크
-    from core.user import is_admin_user
-    is_admin = is_admin_user()
 
     with st.sidebar:
-        # 관리자만 로그 뷰어 옵션 표시
-        view_options = ["뉴스/챗봇"]
-        if is_admin:
-            view_options.append("로그 뷰어")
+        # 모든 사용자가 로그 뷰어 옵션 표시 (멘토링용)
+        view_options = ["뉴스/챗봇", "로그 뷰어"]
         
         current_view = st.session_state.get("main_view", "뉴스/챗봇")
-        # 현재 선택된 뷰가 관리자 전용이고 권한이 없으면 뉴스/챗봇으로 변경
-        if current_view == "로그 뷰어" and not is_admin:
-            current_view = "뉴스/챗봇"
-            st.session_state["main_view"] = current_view
         
-        selected_view = st.radio("화면 선택", view_options, index=view_options.index(current_view))
+        selected_view = st.radio("화면 선택", view_options, index=view_options.index(current_view) if current_view in view_options else 0)
         st.session_state["main_view"] = selected_view
 
         # LLM 연결 진단 패널 숨김 (프로덕션 환경)
         # render_llm_diagnostics()
 
     if st.session_state["main_view"] == "로그 뷰어":
-        # 이중 체크: URL 직접 접근 방지
-        if not is_admin:
-            st.error("⚠️ 접근 권한이 없습니다. 로그 뷰어는 관리자만 접근할 수 있습니다.")
-            st.session_state["main_view"] = "뉴스/챗봇"
-            st.rerun()
-        
         st.title("📚 내부 로그 뷰어")
         LogViewer()
         return
