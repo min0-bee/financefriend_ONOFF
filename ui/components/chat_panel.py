@@ -80,7 +80,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
 
     chat_html = (
         "<div id='chat-scroll-box' class='chat-message-container' "
-        "style='max-height:400px; overflow-y:auto; padding-right:8px;'>"
+        "style='overflow-y:auto; padding-right:8px; flex: 1; min-height: 0;'>"
         + "".join(messages_html)
         + "<div id='chat-scroll-anchor'></div></div>"
     )
@@ -88,12 +88,175 @@ def render(terms: dict[str, dict], use_openai: bool=False):
     st_html(
         """
         <script>
-        const anchor = window.parent.document.getElementById('chat-scroll-anchor');
-        if (anchor) {
+        (function() {
+            // 챗봇 컨테이너 높이를 사이드바에 맞게 조정
+            function adjustChatHeight() {
+                const chatBox = window.parent.document.getElementById('chat-scroll-box');
+                if (!chatBox) return;
+                
+                // 뷰포트 높이 계산
+                const vh = window.parent.innerHeight;
+                
+                // 제목 영역 높이 측정 (실제 DOM에서)
+                let titleHeight = 0;
+                const chatPanel = chatBox.closest('[data-testid="column"]') || chatBox.parentElement;
+                if (chatPanel) {
+                    // 제목과 구분선 찾기
+                    const titleElements = chatPanel.querySelectorAll('h3, hr');
+                    titleElements.forEach(el => {
+                        if (el !== chatBox && !chatBox.contains(el)) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.height > 0) {
+                                titleHeight += rect.height + 10; // 마진 포함
+                            }
+                        }
+                    });
+                }
+                if (titleHeight === 0) titleHeight = 100; // 기본값
+                
+                // 입력창 영역 높이 측정 (실제 DOM에서)
+                let inputHeight = 120; // 기본값
+                const chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
+                if (chatInput) {
+                    const inputRect = chatInput.getBoundingClientRect();
+                    inputHeight = inputRect.height + 40; // 입력창 높이 + 여유공간
+                }
+                
+                // 초기화 버튼 높이 고려
+                const resetButton = window.parent.document.querySelector('button');
+                if (resetButton && resetButton.textContent.includes('초기화')) {
+                    const buttonRect = resetButton.getBoundingClientRect();
+                    inputHeight += buttonRect.height + 10;
+                }
+                
+                // 플로팅 챗봇 높이에 맞게 계산 (600px 전체 높이에서 제목과 입력창 높이를 뺀 값)
+                const totalHeight = 600; // 플로팅 챗봇 전체 높이
+                const calculatedHeight = totalHeight - titleHeight - inputHeight - 20; // 20px 여유공간
+                
+                // 최소 높이 보장
+                const finalHeight = Math.max(300, calculatedHeight);
+                chatBox.style.height = finalHeight + 'px';
+                chatBox.style.maxHeight = finalHeight + 'px';
+                chatBox.style.overflowY = 'auto';
+                chatBox.style.padding = '10px';
+            }
+            
+            // 자동 스크롤을 맨 아래로 (챗봇 내부 스크롤만, 페이지 스크롤은 영향 없음)
+            function scrollToBottom() {
+                const chatBox = window.parent.document.getElementById('chat-scroll-box');
+                if (chatBox) {
+                    // 챗봇 컨테이너의 스크롤만 조작 (페이지 스크롤에 영향 없음)
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                    // 부드러운 스크롤을 위한 추가 시도
+                    setTimeout(() => {
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    }, 50);
+                }
+            }
+            
+            // 챗봇 패널 컬럼 설정 (오른쪽 사이드바 형태로 고정)
+            function setupChatPanelLayout() {
+                const chatBox = window.parent.document.getElementById('chat-scroll-box');
+                if (!chatBox) return;
+                
+                // 챗봇 패널의 컬럼 찾기
+                let chatColumn = chatBox.closest('[data-testid="column"]');
+                
+                // Streamlit 구조에 따라 여러 단계로 찾기
+                if (!chatColumn) {
+                    let parent = chatBox.parentElement;
+                    let depth = 0;
+                    while (parent && depth < 10) {
+                        if (parent.hasAttribute && parent.hasAttribute('data-testid')) {
+                            const testId = parent.getAttribute('data-testid');
+                            if (testId === 'column') {
+                                chatColumn = parent;
+                                break;
+                            }
+                        }
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+                }
+                
+                if (chatColumn) {
+                    // 우측 하단 플로팅 챗봇 형태로 고정 (position: fixed 사용)
+                    chatColumn.style.position = 'fixed'; // 요소를 뷰포트에 고정
+                    chatColumn.style.bottom = '20px';     // 화면 하단에서 20px 위로
+                    chatColumn.style.right = '20px';      // 화면 오른쪽에서 20px 왼쪽으로
+                    chatColumn.style.zIndex = '1000';     // 다른 요소들 위에 표시되도록 설정
+                    chatColumn.style.width = '400px';
+                    chatColumn.style.height = '600px';
+                    chatColumn.style.background = '#ffffff';
+                    chatColumn.style.borderRadius = '10px';
+                    chatColumn.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
+                    chatColumn.style.display = 'flex';
+                    chatColumn.style.flexDirection = 'column';
+                    chatColumn.style.padding = '0';
+                    chatColumn.style.boxSizing = 'border-box';
+                    chatColumn.style.overflow = 'hidden';
+                }
+            }
+            
+            // 초기 조정 및 스크롤
             setTimeout(() => {
-                anchor.scrollIntoView({behavior: "smooth", block: "end"});
-            }, 50);
-        }
+                setupChatPanelLayout();
+                adjustChatHeight();
+                scrollToBottom();
+            }, 100);
+            
+            // 윈도우 리사이즈 시 재조정
+            window.parent.addEventListener('resize', () => {
+                setTimeout(() => {
+                    setupChatPanelLayout();
+                    adjustChatHeight();
+                }, 100);
+            });
+            
+            // 사이드바는 고정이므로 스크롤 이벤트는 필요 없음
+            
+            // 새 메시지가 추가될 때마다 자동 스크롤 (MutationObserver 사용)
+            const chatBox = window.parent.document.getElementById('chat-scroll-box');
+            if (chatBox) {
+                const observer = new MutationObserver((mutations) => {
+                    // 내용이 변경되었을 때만 스크롤
+                    let shouldScroll = false;
+                    mutations.forEach(mutation => {
+                        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+                            shouldScroll = true;
+                        }
+                    });
+                    if (shouldScroll) {
+                        setTimeout(scrollToBottom, 50);
+                    }
+                });
+                
+                observer.observe(chatBox, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true
+                });
+            }
+            
+            // 페이지 로드 후 주기적으로 스크롤 확인 (새 메시지 추가 대응)
+            let lastScrollHeight = 0;
+            function checkAndScroll() {
+                const chatBox = window.parent.document.getElementById('chat-scroll-box');
+                if (chatBox) {
+                    const currentScrollHeight = chatBox.scrollHeight;
+                    if (currentScrollHeight !== lastScrollHeight) {
+                        lastScrollHeight = currentScrollHeight;
+                        scrollToBottom();
+                    }
+                }
+            }
+            
+            // 주기적으로 확인 (새 메시지가 추가되었는지)
+            setInterval(checkAndScroll, 300);
+            
+            // 초기 스크롤
+            setTimeout(scrollToBottom, 200);
+        })();
         </script>
         """,
         height=0,
@@ -267,6 +430,21 @@ def render(terms: dict[str, dict], use_openai: bool=False):
             log_event("chat_response", **log_kwargs)
         
         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+        # 메시지 추가 후 자동 스크롤을 위한 JavaScript 실행 (챗봇 내부 스크롤만)
+        st_html(
+            """
+            <script>
+            setTimeout(() => {
+                const chatBox = window.parent.document.getElementById('chat-scroll-box');
+                if (chatBox) {
+                    // 챗봇 컨테이너의 스크롤만 조작 (페이지 스크롤에 영향 없음)
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+            }, 200);
+            </script>
+            """,
+            height=0,
+        )
         st.rerun()
 
     # 대화 초기화(변경)
