@@ -158,6 +158,12 @@ def search_news_from_supabase(keyword: str, limit: int = 5) -> List[Dict]:
 def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
     """
     Supabase DB에서 최신 뉴스를 직접 가져옵니다.
+    
+    정렬 기준 (우선순위 순):
+    1. published_at 최신순 (가장 중요)
+    2. impact_score 높은 순 (두 번째)
+    3. credibility_score 높은 순 (세 번째)
+    4. urgency_score 높은 순 (네 번째)
 
     Args:
         limit: 가져올 뉴스 개수 (기본값: 3)
@@ -166,51 +172,160 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
         뉴스 리스트 (실패 시 빈 리스트)
     """
     if not SUPABASE_ENABLE:
+        try:
+            import streamlit as st
+            st.info("ℹ️ Supabase가 비활성화되어 있습니다. 환경 변수를 확인하세요.")
+        except:
+            pass
         return []
 
     supabase = get_supabase_client()
     if not supabase:
+        try:
+            import streamlit as st
+            st.warning("⚠️ Supabase 클라이언트를 생성할 수 없습니다. 연결 설정을 확인하세요.")
+        except:
+            pass
         return []
 
     try:
-        # news 테이블에서 최신 뉴스 가져오기
-        # deleted_at이 NULL인 것만 (삭제되지 않은 뉴스)
-        # published_at 기준 내림차순 정렬 (최신순)
-        response = (
+        import pandas as pd
+        
+        # news 테이블에서 뉴스 가져오기
+        # Supabase에서는 최신순으로 가져온 후, Python에서 점수 기준으로 재정렬
+        query = (
             supabase.table("news")
             .select("*")
             .is_("deleted_at", "null")
-            .order("published_at", desc=True)
-            .limit(limit)
-            .execute()
+            .order("published_at", desc=True)  # 먼저 최신순으로 가져오기
+            .limit(limit * 3)  # 더 많이 가져온 후 정렬 (높은 점수의 최신 뉴스 확보)
         )
+        
+        response = query.execute()
 
         if not response.data:
             return []
 
+        # DataFrame으로 변환하여 정렬
+        if not response.data or len(response.data) == 0:
+            return []
+        
+        df = pd.DataFrame(response.data)
+        
+        if df.empty:
+            return []
+        
+        # 날짜 컬럼 변환
+        if "published_at" in df.columns:
+            df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce")
+        
+        # 정렬 기준: published_at > impact_score > credibility_score > urgency_score
+        # 점수가 NULL인 경우 -1로 변환하여 낮은 우선순위로 처리
+        sort_columns = []
+        ascending_list = []
+        
+        try:
+            # 1순위: published_at 최신순
+            if "published_at" in df.columns:
+                sort_columns.append("published_at")
+                ascending_list.append(False)
+            
+            # 2순위: impact_score 높은 순
+            if "impact_score" in df.columns:
+                df["impact_score_sorted"] = df["impact_score"].fillna(-1)
+                sort_columns.append("impact_score_sorted")
+                ascending_list.append(False)
+            
+            # 3순위: credibility_score 높은 순
+            if "credibility_score" in df.columns:
+                df["credibility_score_sorted"] = df["credibility_score"].fillna(-1)
+                sort_columns.append("credibility_score_sorted")
+                ascending_list.append(False)
+            
+            # 4순위: urgency_score 높은 순
+            if "urgency_score" in df.columns:
+                df["urgency_score_sorted"] = df["urgency_score"].fillna(-1)
+                sort_columns.append("urgency_score_sorted")
+                ascending_list.append(False)
+            
+            # 정렬 실행
+            if sort_columns:
+                df = df.sort_values(sort_columns, ascending=ascending_list)
+                # 임시 컬럼 제거
+                temp_cols = [col for col in df.columns if col.endswith("_sorted")]
+                if temp_cols:
+                    df = df.drop(columns=temp_cols)
+                # 상위 limit개만 선택
+                df = df.head(limit)
+            else:
+                # 점수 컬럼이 없으면 published_at 기준으로만 정렬
+                if "published_at" in df.columns:
+                    df = df.sort_values("published_at", ascending=False).head(limit)
+                else:
+                    df = df.head(limit)
+        except Exception as sort_error:
+            # 정렬 실패 시 기본 정렬만 수행
+            print(f"정렬 중 오류 발생: {sort_error}")
+            if "published_at" in df.columns:
+                df = df.sort_values("published_at", ascending=False).head(limit)
+            else:
+                df = df.head(limit)
+
         # Supabase 응답을 기존 형식으로 변환
         formatted_news = []
-        for news in response.data:
+        for _, row in df.iterrows():
+            # pandas Series를 딕셔너리로 변환하여 안전하게 접근
+            news = row.to_dict()
+            
             # published_at 또는 created_at을 날짜로 변환
             date_str = news.get("published_at") or news.get("created_at")
-            if date_str:
+            try:
+                is_valid_date = date_str is not None and (not hasattr(date_str, '__iter__') or str(date_str).strip() != '')
+            except:
+                is_valid_date = False
+            
+            if date_str and is_valid_date:
                 try:
                     # ISO 형식을 날짜만 추출 (YYYY-MM-DD)
-                    date_obj = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                    date = date_obj.strftime("%Y-%m-%d")
+                    if isinstance(date_str, pd.Timestamp):
+                        date = date_str.strftime("%Y-%m-%d")
+                    else:
+                        date_str_clean = str(date_str).replace("Z", "+00:00").split("T")[0]
+                        date_obj = datetime.fromisoformat(date_str_clean)
+                        date = date_obj.strftime("%Y-%m-%d")
                 except Exception:
-                    date = date_str[:10] if len(date_str) >= 10 else "2025-01-01"
+                    date_str_str = str(date_str)
+                    date = date_str_str[:10] if len(date_str_str) >= 10 else "2025-01-01"
             else:
                 date = "2025-01-01"
 
+            # content 처리 (None 체크)
+            content = news.get("content")
+            try:
+                if content is None or str(content).strip() == '' or str(content).lower() == 'nan':
+                    content = "내용 없음"
+                else:
+                    content = str(content)
+            except:
+                content = "내용 없음"
+
+            # summary 처리
+            summary = news.get("summary")
+            try:
+                is_valid_summary = summary is not None and str(summary).strip() != '' and str(summary).lower() != 'nan'
+            except:
+                is_valid_summary = False
+            
+            if is_valid_summary:
+                summary = str(summary)
+            else:
+                summary = content[:100] + "..." if len(content) > 100 else (content if content != "내용 없음" else "요약 없음")
+
             formatted_news.append({
                 "id": news.get("news_id"),
-                "title": news.get("title", "제목 없음"),
-                "summary": news.get("summary") or (
-                    news.get("content", "")[:100] + "..."
-                    if news.get("content") else "요약 없음"
-                ),
-                "content": news.get("content", "내용 없음"),
+                "title": news.get("title") or "제목 없음",
+                "summary": summary,
+                "content": content,
                 "date": date,
                 "url": news.get("url") or news.get("link") or ""
             })
@@ -218,8 +333,23 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
         return formatted_news
 
     except Exception as e:
-        # Supabase 오류 - 조용히 실패
-        print(f"Supabase 뉴스 조회 실패: {e}")
+        # Supabase 오류 - 에러 메시지 출력하여 디버깅 가능하도록
+        import traceback
+        error_msg = f"Supabase 뉴스 조회 실패: {e}"
+        error_detail = traceback.format_exc()
+        print(error_msg)
+        print(f"에러 상세: {error_detail}")
+        
+        # Streamlit 환경에서도 에러 표시 (로컬 개발 시 디버깅 용이)
+        try:
+            import streamlit as st
+            if SUPABASE_ENABLE:
+                st.error(f"⚠️ 뉴스 로드 실패: {str(e)}")
+                with st.expander("에러 상세 정보"):
+                    st.code(error_detail)
+        except:
+            pass  # Streamlit이 없으면 무시
+        
         return []
 
 

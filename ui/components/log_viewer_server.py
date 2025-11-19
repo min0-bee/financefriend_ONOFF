@@ -192,7 +192,18 @@ def _get_term_from_row(row: pd.Series) -> Optional[str]:
 # ============================================================================
 
 def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
-    """Supabase에서 news 테이블 데이터 가져오기"""
+    """
+    Supabase에서 news 테이블 데이터 가져오기
+    
+    정렬 기준 (우선순위 순):
+    1. published_at 최신순 (가장 중요)
+    2. impact_score 높은 순 (두 번째)
+    3. credibility_score 높은 순 (세 번째)
+    4. urgency_score 높은 순 (네 번째)
+    
+    필터:
+    - deleted_at이 NULL인 뉴스만 (삭제되지 않은 뉴스)
+    """
     if not SUPABASE_ENABLE:
         return pd.DataFrame()
     
@@ -202,12 +213,13 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
     
     try:
         # deleted_at이 NULL인 뉴스만 가져오기 (삭제되지 않은 뉴스)
+        # Supabase에서는 최신순으로 가져온 후, Python에서 점수 기준으로 재정렬
         query = (
             supabase.table("news")
             .select("*")
             .is_("deleted_at", "null")
-            .order("published_at", desc=True)
-            .limit(limit)
+            .order("published_at", desc=True)  # 먼저 최신순으로 가져오기
+            .limit(limit * 3)  # 더 많이 가져온 후 정렬 (높은 점수의 최신 뉴스 확보)
         )
         
         response = query.execute()
@@ -220,6 +232,49 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
             for col in date_columns:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors="coerce")
+            
+            # 정렬 기준: published_at > impact_score > credibility_score > urgency_score
+            # 점수가 NULL인 경우 -1로 변환하여 낮은 우선순위로 처리
+            sort_columns = []
+            ascending_list = []
+            
+            # 1순위: published_at 최신순
+            if "published_at" in df.columns:
+                sort_columns.append("published_at")
+                ascending_list.append(False)
+            
+            # 2순위: impact_score 높은 순
+            if "impact_score" in df.columns:
+                df["impact_score_sorted"] = df["impact_score"].fillna(-1)
+                sort_columns.append("impact_score_sorted")
+                ascending_list.append(False)
+            
+            # 3순위: credibility_score 높은 순
+            if "credibility_score" in df.columns:
+                df["credibility_score_sorted"] = df["credibility_score"].fillna(-1)
+                sort_columns.append("credibility_score_sorted")
+                ascending_list.append(False)
+            
+            # 4순위: urgency_score 높은 순
+            if "urgency_score" in df.columns:
+                df["urgency_score_sorted"] = df["urgency_score"].fillna(-1)
+                sort_columns.append("urgency_score_sorted")
+                ascending_list.append(False)
+            
+            # 정렬 실행
+            if sort_columns:
+                df = df.sort_values(sort_columns, ascending=ascending_list)
+                # 임시 컬럼 제거
+                temp_cols = [col for col in df.columns if col.endswith("_sorted")]
+                df = df.drop(columns=temp_cols)
+                # 상위 limit개만 반환
+                df = df.head(limit)
+            else:
+                # 점수 컬럼이 없으면 published_at 기준으로만 정렬
+                if "published_at" in df.columns:
+                    df = df.sort_values("published_at", ascending=False).head(limit)
+                else:
+                    df = df.head(limit)
             
             return df
         return pd.DataFrame()
@@ -294,6 +349,23 @@ def _fill_sessions_from_time(
     time_column: str = "event_time",
     user_column: str = "user_id",
 ) -> pd.DataFrame:
+    """
+    세션 ID 계산: 이벤트 시간 기준으로 세션 구분
+    
+    로직:
+    1. user_id별로 이벤트를 시간순 정렬
+    2. 이전 이벤트와의 시간 차이가 threshold_minutes(기본 30분)를 초과하면 새 세션으로 구분
+    3. 첫 이벤트는 항상 새 세션 시작
+    
+    Args:
+        df: 이벤트 로그 DataFrame
+        threshold_minutes: 세션 구분 기준 시간(분) - 기본값 30분
+        time_column: 시간 컬럼명
+        user_column: 사용자 ID 컬럼명
+    
+    Returns:
+        session_id_resolved 컬럼이 추가된 DataFrame
+    """
     """event_time 기반으로 세션 ID를 추산합니다."""
     if df.empty or time_column not in df.columns:
         result = df.copy()
@@ -348,24 +420,35 @@ def _fill_sessions_from_time(
 
 def render(show_mode: str = "dashboard"):
     """
-    서버에서 데이터를 가져와서 대시보드/로그 뷰어 렌더링
+    메인 렌더링 함수: 서버에서 데이터를 가져와서 대시보드/로그 뷰어 렌더링
+    
+    전체 흐름:
+    1. Supabase에서 이벤트 로그 가져오기 (최대 2000건)
+    2. UTC 시간을 KST로 변환
+    3. 세션 계산 (30분 간격)
+    4. show_mode에 따라 대시보드 또는 로그 뷰어 표시
     
     Args:
-        show_mode: "dashboard" 또는 "log_viewer"
+        show_mode: "dashboard" (대시보드) 또는 "log_viewer" (로그 뷰어)
     """
     from core.logger import _get_user_id
 
+    # Supabase에서 이벤트 로그 가져오기
     with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
-        df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
+        # WAU 계산을 위해 최근 7일 데이터를 충분히 가져와야 함
+        # limit을 늘려서 최근 데이터를 더 많이 가져오기
+        df = _fetch_event_logs_from_supabase(user_id=None, limit=5000)  # 2000 -> 5000으로 증가
 
         if df.empty:
             st.info("📭 아직 이벤트 로그가 없습니다. 앱을 사용하면 데이터가 수집됩니다.")
             return
 
+        # 시간대 변환: UTC → KST (한국 표준시)
         df["event_time"] = _to_kst(df["event_time"])
         df = df.sort_values("event_time")
 
-        # 세션 계산 (모든 탭에서 사용) - 30분으로 고정
+        # 세션 계산: 30분 간격으로 세션 구분 (모든 탭에서 사용)
+        # user_id별로 이벤트를 시간순 정렬하고, 30분 이상 간격이 있으면 새 세션으로 구분
         session_gap_minutes = 30
         df = _fill_sessions_from_time(df, threshold_minutes=session_gap_minutes)
         session_column = "session_id_resolved" if "session_id_resolved" in df.columns else "session_id"
@@ -374,32 +457,33 @@ def render(show_mode: str = "dashboard"):
         if show_mode == "dashboard":
             st.markdown("## 📊 대시보드")
             
-            # KPI Dashboard 메인 페이지 (요약)
-            _render_kpi_dashboard(df, session_column)
-            
-            st.markdown("---")
-            
-            # KPI Dashboard 내부 서브 탭
-            kpi_subtab1, kpi_subtab2, kpi_subtab3 = st.tabs([
-                "🔴 Service Health",
-                "🟡 Content Quality",
-                "🟢 User Behavior"
+            # 상위 레벨 탭: 4개 카테고리
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "📊 KPI Dashboard",      # 핵심 지표 요약 (DAU, WAU, 세션 길이 등)
+                "🔴 Service Health",     # 서비스 성능 및 안정성
+                "🟡 Content Quality",     # 뉴스 콘텐츠 품질
+                "🟢 User Behavior"       # 사용자 행동 분석
             ])
             
-            # 서브 탭 1: Service Health
-            with kpi_subtab1:
+            # 탭 1: KPI Dashboard - 핵심 지표 요약
+            with tab1:
+                _render_kpi_dashboard(df, session_column)
+            
+            # 탭 2: Service Health - 성능 메트릭, RAG 응답 시간, URL 파싱 등
+            with tab2:
                 _render_service_health_tab(df, session_column)
             
-            # 서브 탭 2: Content Quality
-            with kpi_subtab2:
+            # 탭 3: Content Quality - 뉴스 소스 분석, 본문 품질, 워드클라우드 등
+            with tab3:
                 _render_content_quality_tab(df)
             
-            # 서브 탭 3: User Behavior
-            with kpi_subtab3:
+            # 탭 4: User Behavior - 클릭률, 읽기 시간, 용어 클릭률 등
+            with tab4:
                 _render_user_behavior_tab(df, session_column)
         
         elif show_mode == "log_viewer":
             st.markdown("## 📁 로그 뷰어")
+            # 로그 뷰어: 개별 이벤트 로그를 필터링하여 상세 확인
             _render_log_viewer_tab(df, session_column)
 
 # ============================================================================
@@ -408,8 +492,15 @@ def render(show_mode: str = "dashboard"):
 
 def _render_service_health_tab(df_view: pd.DataFrame, session_column: str):
     """
-    🔴 서비스 성능 데이터 탭
-    → "MVP가 멈추지 않고 버틸 수 있는가?"
+    🔴 서비스 성능 데이터 탭: "MVP가 멈추지 않고 버틸 수 있는가?"
+    
+    주요 분석 항목:
+    - 뉴스 클릭/상세 진입 메트릭
+    - 뉴스 상세 보기 로딩 시간 (하이라이트, 용어 필터링)
+    - RAG 응답 시간 (glossary_answer, chat_response)
+    - 자연어 검색 처리 속도
+    - URL 파싱 성공/실패율
+    - Streamlit 세션 수 및 동시 접속 부하
     """
     st.markdown("### 🔴 서비스 성능 데이터 (Service Health)")
     st.markdown("**목표**: 서비스의 기술적 안정성 측정 - 모든 분석의 기반")
@@ -727,8 +818,22 @@ def _render_session_load(df_view: pd.DataFrame, session_column: str):
 
 def _render_content_quality_tab(df_view: pd.DataFrame):
     """
-    🟡 뉴스 콘텐츠 품질 데이터 탭
-    → "우리 제품이 제공하는 뉴스 데이터 자체가 좋은가?"
+    🟡 뉴스 콘텐츠 품질 데이터 탭: "우리 제품이 제공하는 뉴스 데이터 자체가 좋은가?"
+    
+    주요 분석 항목:
+    - 뉴스 소스 분석 (DB 뉴스 vs 임시 뉴스)
+    - 뉴스 출처(언론사) 분포
+    - 금융/비금융 기사 비중
+    - 본문 길이 분포 및 누락 비율
+    - 제목·본문 중복률
+    - 임팩트 점수 분포
+    - 중복 기사 비율
+    - 뉴스 수집량 추세
+    - 워드클라우드 (특정 날짜)
+    - 기초 뉴스 지표 분석 + 라이다 차트
+    - 프롬프트 튜닝용 샘플 기사 상세 비교
+    - 검색 결과 뉴스 인기 분석
+    - URL 파싱 품질
     """
     st.markdown("### 🟡 뉴스 콘텐츠 품질 데이터 (Content Quality)")
     st.markdown("**목표**: 뉴스 콘텐츠의 품질 측정 - 서비스의 핵심 자산")
@@ -1635,12 +1740,28 @@ def _render_wordcloud(news_df: pd.DataFrame):
         st.info("💡 한글 폰트 경로를 확인하거나 wordcloud 라이브러리를 재설치해주세요.")
 
 def _render_news_radar_analysis(news_df: pd.DataFrame):
-    """기초 뉴스 지표 분석 + 라이다 차트"""
-    st.markdown("### 📊 기초 뉴스 지표 분석 + 라이다 차트")
-    st.markdown("**목적**: 뉴스의 5가지 지표를 분석하여 시각화")
+    """
+    뉴스 점수 분석 + 라이다 차트
+    
+    분석 지표:
+    - impact_score: 뉴스의 영향도 점수
+    - credibility_score: 뉴스의 신뢰도 점수
+    - urgency_score: 뉴스의 긴급도 점수
+    """
+    st.markdown("### 📊 뉴스 점수 분석 + 라이다 차트")
+    st.markdown("**목적**: 뉴스의 3가지 점수(impact_score, credibility_score, urgency_score)를 시각화")
     
     if news_df.empty:
         st.info("📊 분석할 뉴스 데이터가 없습니다.")
+        return
+    
+    # 필요한 점수 컬럼 확인
+    required_columns = ["impact_score", "credibility_score", "urgency_score"]
+    missing_columns = [col for col in required_columns if col not in news_df.columns]
+    
+    if missing_columns:
+        st.warning(f"⚠️ 필요한 점수 컬럼이 없습니다: {', '.join(missing_columns)}")
+        st.info("💡 뉴스 데이터에 impact_score, credibility_score, urgency_score 컬럼이 있는지 확인해주세요.")
         return
     
     # 뉴스 선택 UI
@@ -1666,22 +1787,22 @@ def _render_news_radar_analysis(news_df: pd.DataFrame):
         st.warning("⚠️ 제목 컬럼이 없어 뉴스를 선택할 수 없습니다.")
         return
     
-    # 선택한 뉴스의 지표 계산
-    news_scores = _calculate_news_scores(selected_news)
+    # 선택한 뉴스의 점수 가져오기
+    impact_score = float(selected_news.get("impact_score", 0)) if pd.notna(selected_news.get("impact_score")) else 0
+    credibility_score = float(selected_news.get("credibility_score", 0)) if pd.notna(selected_news.get("credibility_score")) else 0
+    urgency_score = float(selected_news.get("urgency_score", 0)) if pd.notna(selected_news.get("urgency_score")) else 0
     
     # 라이다 차트 생성
     if go is not None:
         st.markdown("#### 📈 선택한 뉴스 라이다 차트")
         
         # 라이다 차트 데이터 준비
-        categories = ["시장 영향도", "정보 밀도", "초보자 난이도", "학습 가치", "실행 가치"]
-        values = [
-            news_scores["market_impact"],
-            news_scores["info_density"],
-            news_scores["beginner_friendly"],
-            news_scores["learning_value"],
-            news_scores["action_value"]
-        ]
+        categories = ["Impact Score", "Credibility Score", "Urgency Score"]
+        values = [impact_score, credibility_score, urgency_score]
+        
+        # 최대값 계산 (점수 범위가 0-100이 아닐 수 있으므로)
+        max_score = max(values) if values else 100
+        max_range = max(100, max_score * 1.2)  # 여유 공간을 위해 20% 추가
         
         # 라이다 차트 생성
         fig = go.Figure()
@@ -1698,10 +1819,10 @@ def _render_news_radar_analysis(news_df: pd.DataFrame):
             polar=dict(
                 radialaxis=dict(
                     visible=True,
-                    range=[0, 100]
+                    range=[0, max_range]
                 )),
             showlegend=True,
-            title="뉴스 지표 분석",
+            title="뉴스 점수 분석",
             height=500
         )
         
@@ -1710,11 +1831,9 @@ def _render_news_radar_analysis(news_df: pd.DataFrame):
         # 점수 상세 정보
         st.markdown("##### 📋 상세 점수")
         score_df = pd.DataFrame([
-            {"지표": "시장 영향도", "점수": f"{news_scores['market_impact']:.1f}/100"},
-            {"지표": "정보 밀도", "점수": f"{news_scores['info_density']:.1f}/100"},
-            {"지표": "초보자 난이도", "점수": f"{news_scores['beginner_friendly']:.1f}/100"},
-            {"지표": "학습 가치", "점수": f"{news_scores['learning_value']:.1f}/100"},
-            {"지표": "실행 가치", "점수": f"{news_scores['action_value']:.1f}/100"},
+            {"지표": "Impact Score", "점수": f"{impact_score:.1f}"},
+            {"지표": "Credibility Score", "점수": f"{credibility_score:.1f}"},
+            {"지표": "Urgency Score", "점수": f"{urgency_score:.1f}"},
         ])
         st.dataframe(score_df, use_container_width=True)
         
@@ -1733,32 +1852,83 @@ def _render_news_radar_analysis(news_df: pd.DataFrame):
             st.info("⚠️ published_at 컬럼이 없어 전체 뉴스를 사용합니다.")
         
         if not recent_news.empty:
-            # 최근 7일 뉴스들의 평균 점수 계산
-            all_scores = []
-            for idx, row in recent_news.iterrows():
-                scores = _calculate_news_scores(row.to_dict())
-                all_scores.append(scores)
+            # 최근 7일 뉴스들의 점수 수집
+            impact_scores = []
+            credibility_scores = []
+            urgency_scores = []
             
-            if all_scores:
-                avg_scores = {
-                    "market_impact": sum(s["market_impact"] for s in all_scores) / len(all_scores),
-                    "info_density": sum(s["info_density"] for s in all_scores) / len(all_scores),
-                    "beginner_friendly": sum(s["beginner_friendly"] for s in all_scores) / len(all_scores),
-                    "learning_value": sum(s["learning_value"] for s in all_scores) / len(all_scores),
-                    "action_value": sum(s["action_value"] for s in all_scores) / len(all_scores),
-                }
+            for idx, row in recent_news.iterrows():
+                impact = row.get("impact_score")
+                credibility = row.get("credibility_score")
+                urgency = row.get("urgency_score")
+                
+                if pd.notna(impact):
+                    impact_scores.append(float(impact))
+                if pd.notna(credibility):
+                    credibility_scores.append(float(credibility))
+                if pd.notna(urgency):
+                    urgency_scores.append(float(urgency))
+            
+            if impact_scores or credibility_scores or urgency_scores:
+                # 기술통계 계산 함수
+                def calc_stats(scores):
+                    """점수 리스트로부터 기술통계 계산"""
+                    if not scores:
+                        return {
+                            "평균": 0.0,
+                            "표준편차": 0.0,
+                            "최소값": 0.0,
+                            "최대값": 0.0,
+                            "중앙값": 0.0,
+                            "개수": 0
+                        }
+                    # numpy를 사용하여 기술통계 계산
+                    try:
+                        import numpy as np
+                        scores_array = np.array(scores)
+                        return {
+                            "평균": float(np.mean(scores_array)),
+                            "표준편차": float(np.std(scores_array)),
+                            "최소값": float(np.min(scores_array)),
+                            "최대값": float(np.max(scores_array)),
+                            "중앙값": float(np.median(scores_array)),
+                            "개수": len(scores)
+                        }
+                    except ImportError:
+                        # numpy가 없으면 기본 Python으로 계산
+                        n = len(scores)
+                        mean = sum(scores) / n
+                        variance = sum((x - mean) ** 2 for x in scores) / n
+                        std_dev = variance ** 0.5
+                        sorted_scores = sorted(scores)
+                        median = sorted_scores[n // 2] if n % 2 == 1 else (sorted_scores[n // 2 - 1] + sorted_scores[n // 2]) / 2
+                        return {
+                            "평균": float(mean),
+                            "표준편차": float(std_dev),
+                            "최소값": float(min(scores)),
+                            "최대값": float(max(scores)),
+                            "중앙값": float(median),
+                            "개수": n
+                        }
+                
+                # 각 점수별 기술통계 계산
+                impact_stats = calc_stats(impact_scores)
+                credibility_stats = calc_stats(credibility_scores)
+                urgency_stats = calc_stats(urgency_scores)
+                
+                # 평균값 (라이다 차트용)
+                avg_impact = impact_stats["평균"]
+                avg_credibility = credibility_stats["평균"]
+                avg_urgency = urgency_stats["평균"]
+                
+                avg_values = [avg_impact, avg_credibility, avg_urgency]
+                avg_max_range = max(100, max(avg_values) * 1.2) if avg_values else 100
                 
                 # 평균 라이다 차트 생성
                 avg_fig = go.Figure()
                 
                 avg_fig.add_trace(go.Scatterpolar(
-                    r=[
-                        avg_scores["market_impact"],
-                        avg_scores["info_density"],
-                        avg_scores["beginner_friendly"],
-                        avg_scores["learning_value"],
-                        avg_scores["action_value"]
-                    ],
+                    r=avg_values,
                     theta=categories,
                     fill='toself',
                     name='최근 7일 평균',
@@ -1769,25 +1939,47 @@ def _render_news_radar_analysis(news_df: pd.DataFrame):
                     polar=dict(
                         radialaxis=dict(
                             visible=True,
-                            range=[0, 100]
+                            range=[0, avg_max_range]
                         )),
                     showlegend=True,
-                    title="최근 7일 기사 평균 지표",
+                    title="최근 7일 기사 평균 점수",
                     height=500
                 )
                 
                 st.plotly_chart(avg_fig, use_container_width=True)
                 
-                # 평균 점수 상세 정보
-                st.markdown("##### 📋 최근 7일 평균 점수")
-                avg_score_df = pd.DataFrame([
-                    {"지표": "시장 영향도", "평균 점수": f"{avg_scores['market_impact']:.1f}/100"},
-                    {"지표": "정보 밀도", "평균 점수": f"{avg_scores['info_density']:.1f}/100"},
-                    {"지표": "초보자 난이도", "평균 점수": f"{avg_scores['beginner_friendly']:.1f}/100"},
-                    {"지표": "학습 가치", "평균 점수": f"{avg_scores['learning_value']:.1f}/100"},
-                    {"지표": "실행 가치", "평균 점수": f"{avg_scores['action_value']:.1f}/100"},
+                # 기술통계 상세 정보
+                st.markdown("##### 📋 최근 7일 기술통계")
+                stats_df = pd.DataFrame([
+                    {
+                        "지표": "Impact Score",
+                        "평균": f"{impact_stats['평균']:.1f}",
+                        "표준편차": f"{impact_stats['표준편차']:.1f}",
+                        "최소값": f"{impact_stats['최소값']:.1f}",
+                        "최대값": f"{impact_stats['최대값']:.1f}",
+                        "중앙값": f"{impact_stats['중앙값']:.1f}",
+                        "개수": f"{impact_stats['개수']:,}건"
+                    },
+                    {
+                        "지표": "Credibility Score",
+                        "평균": f"{credibility_stats['평균']:.1f}",
+                        "표준편차": f"{credibility_stats['표준편차']:.1f}",
+                        "최소값": f"{credibility_stats['최소값']:.1f}",
+                        "최대값": f"{credibility_stats['최대값']:.1f}",
+                        "중앙값": f"{credibility_stats['중앙값']:.1f}",
+                        "개수": f"{credibility_stats['개수']:,}건"
+                    },
+                    {
+                        "지표": "Urgency Score",
+                        "평균": f"{urgency_stats['평균']:.1f}",
+                        "표준편차": f"{urgency_stats['표준편차']:.1f}",
+                        "최소값": f"{urgency_stats['최소값']:.1f}",
+                        "최대값": f"{urgency_stats['최대값']:.1f}",
+                        "중앙값": f"{urgency_stats['중앙값']:.1f}",
+                        "개수": f"{urgency_stats['개수']:,}건"
+                    },
                 ])
-                st.dataframe(avg_score_df, use_container_width=True)
+                st.dataframe(stats_df, use_container_width=True)
                 st.caption(f"📊 분석 기사 수: {len(recent_news):,}건")
             else:
                 st.info("📊 점수를 계산할 수 있는 뉴스가 없습니다.")
@@ -1798,87 +1990,20 @@ def _render_news_radar_analysis(news_df: pd.DataFrame):
 
 def _calculate_news_scores(news: Dict[str, Any]) -> Dict[str, float]:
     """
-    뉴스의 5가지 지표를 계산하여 라이다 차트에 사용할 점수를 반환합니다.
+    뉴스의 5가지 지표를 계산하여 라이다 차트에 사용할 점수를 반환
     
-    각 지표는 0-100 점수로 계산되며, 뉴스의 제목과 본문을 분석하여 점수를 산출합니다.
+    계산 지표:
+    1. 시장 영향도: 금융 시장 관련 키워드 기반 (0-100)
+    2. 정보 밀도: 본문 길이 및 숫자 포함 여부 (0-100)
+    3. 초보자 난이도: RAG 용어 사전에 있는 전문 용어가 많을수록 감점 (0-100, 높을수록 쉬움)
+    4. 학습 가치: 교육적 키워드 기반 (0-100)
+    5. 실행 가치: 실용적 조언 키워드 기반 (0-100)
     
     Args:
-        news: 뉴스 데이터 딕셔너리. 'title'과 'content' 키를 포함해야 합니다.
+        news: 뉴스 딕셔너리 (title, content 등 포함)
     
     Returns:
-        Dict[str, float]: 5가지 지표의 점수 딕셔너리
-        - market_impact: 시장 영향도 (0-100)
-        - info_density: 정보 밀도 (0-100)
-        - beginner_friendly: 초보자 난이도 (0-100, 높을수록 쉬움)
-        - learning_value: 학습 가치 (0-100)
-        - action_value: 실행 가치 (0-100)
-    
-    계산 방법:
-        ========== 1. 시장 영향도 (Market Impact) ==========
-        기본 점수: 50점
-        - 금융 관련 키워드 매칭: 키워드 1개당 +5점 (최대 50점 추가)
-          * 키워드: 금리, 금융, 증권, 주식, 시장, 경제, 정책, 한국은행, 코스피, 코스닥,
-                    인플레이션, 디플레이션, 환율, 부동산, 투자, 자산
-        - 숫자 포함 여부: 숫자 1개당 +2점 (최대 20점 추가)
-          * 패턴: \d+[%원억만조]? (예: "3.5%", "1000원", "1억")
-        최종 점수 범위: 50-100점
-        
-        ========== 2. 정보 밀도 (Info Density) ==========
-        기본 점수: 본문 길이에 따라 결정
-        - 본문 길이 기준:
-          * 2000자 이상: 80점
-          * 1000-1999자: 70점
-          * 500-999자: 60점
-          * 500자 미만: 40점
-        - 숫자/통계 포함 여부: 숫자 1개당 +1점 (최대 20점 추가)
-          * 본문 내 숫자 패턴 매칭: \d+[%원억만조]?
-        최종 점수 범위: 40-100점
-        
-        ========== 3. 초보자 난이도 (Beginner Friendly) ==========
-        기본 점수: 100점 (RAG 용어가 없으면 최고점)
-        - RAG 금융 용어 사전 기반 감점: RAG 용어 사전의 용어가 뉴스에 포함된 개수에 따라 감점
-          * 용어 사전 크기에 따라 감점 비율 조정:
-            - 50개 이하: 용어 1개당 -2점
-            - 51-200개: 용어 1개당 -1점
-            - 200개 이상: 용어 1개당 -0.5점
-          * 최대 50점까지 감점 가능
-          * Fallback: RAG 로드 실패 시 기본 전문 용어 목록(14개) 사용, 용어 1개당 -2점
-        - 본문 길이 감점: 본문이 300자 미만이면 -20점 (정보 부족)
-        최종 점수 범위: 0-100점 (높을수록 초보자에게 쉬움)
-        
-        ========== 4. 학습 가치 (Learning Value) ==========
-        기본 점수: 50점
-        - 교육적 키워드 매칭: 키워드 1개당 +5점
-          * 키워드: 설명, 이유, 배경, 과정, 방법, 원리, 개념, 의미,
-                    영향, 효과, 결과, 분석, 전망, 예상
-        - 본문 길이 보너스:
-          * 1500자 이상: +20점
-          * 800-1499자: +10점
-        최종 점수 범위: 50-100점
-        
-        ========== 5. 실행 가치 (Action Value) ==========
-        기본 점수: 50점
-        - 행동 지침 키워드 매칭: 키워드 1개당 +5점
-          * 키워드: 권장, 제안, 조언, 방안, 대책, 전략, 계획, 방법,
-                    해야, 필요, 중요, 주의, 경고, 시사점
-        - 구체적 숫자/기간 보너스: 숫자/기간이 3개 이상이면 +15점
-          * 패턴: \d+[%원억만조일월년] (예: "3%", "2024년", "1월")
-        최종 점수 범위: 50-100점
-        
-    예시:
-        >>> news = {
-        ...     "title": "한국은행 기준금리 3.5%로 인상",
-        ...     "content": "한국은행이 기준금리를 0.25%p 인상하여 3.5%로 결정했다. 이는 인플레이션을 억제하기 위한 조치로..."
-        ... }
-        >>> scores = _calculate_news_scores(news)
-        >>> print(scores)
-        {
-            'market_impact': 85.0,      # 금리, 한국은행, 인플레이션 키워드 + 숫자 포함
-            'info_density': 75.0,       # 본문 길이 + 숫자 포함
-            'beginner_friendly': 80.0,  # 전문 용어 없음
-            'learning_value': 70.0,     # 설명적 내용 포함
-            'action_value': 60.0        # 조치, 필요 등 키워드 포함
-        }
+        5가지 지표 점수가 담긴 딕셔너리
     """
     title = str(news.get("title", "")).strip()
     content = str(news.get("content", "")).strip()
@@ -2073,10 +2198,53 @@ def _render_search_result_news_popularity(df_view: pd.DataFrame):
             news_id_str = str(news_id)
             news_clicks[news_id_str] = news_clicks.get(news_id_str, 0) + 1
             
-            # 제목 정보 수집
+            # 제목 정보 수집 (payload에서 먼저 시도)
             payload = _parse_payload(row.get("payload"))
             if payload and "title" in payload and news_id_str not in news_titles:
                 news_titles[news_id_str] = payload.get("title", "")
+    
+    # Supabase news 테이블에서 제목 가져오기 (payload에 없는 경우)
+    all_news_ids = set(news_appearances.keys()) | set(news_clicks.keys())
+    missing_title_ids = [nid for nid in all_news_ids if nid not in news_titles]
+    
+    if missing_title_ids:
+        try:
+            # Supabase에서 뉴스 제목 가져오기
+            news_df = _fetch_news_from_supabase(limit=10000)  # 충분히 많이 가져오기
+            if not news_df.empty and "news_id" in news_df.columns and "title" in news_df.columns:
+                # news_id를 문자열로 변환하여 매칭 (양방향 변환 시도)
+                news_df["news_id_str"] = news_df["news_id"].astype(str)
+                # 정수로도 변환 시도 (news_id가 정수인 경우)
+                try:
+                    news_df["news_id_int"] = news_df["news_id"].astype(int)
+                except:
+                    news_df["news_id_int"] = None
+                
+                for news_id_str in missing_title_ids:
+                    matched_news = None
+                    
+                    # 문자열로 먼저 매칭 시도
+                    matched_news = news_df[news_df["news_id_str"] == news_id_str]
+                    
+                    # 문자열 매칭 실패 시 정수로 변환하여 매칭 시도
+                    if matched_news.empty:
+                        try:
+                            news_id_int = int(news_id_str)
+                            if "news_id_int" in news_df.columns:
+                                matched_news = news_df[news_df["news_id_int"] == news_id_int]
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if not matched_news.empty:
+                        title = matched_news.iloc[0].get("title", "")
+                        if title and pd.notna(title) and str(title).strip():
+                            news_titles[news_id_str] = str(title).strip()
+        except Exception as e:
+            # Supabase 조회 실패 시 에러 로깅 (디버깅용)
+            import traceback
+            print(f"⚠️ Supabase에서 뉴스 제목 조회 실패: {e}")
+            print(f"에러 상세: {traceback.format_exc()}")
+            # 에러가 발생해도 계속 진행 (payload에서 가져온 제목만 사용)
     
     # 인기 뉴스 분석 데이터 생성
     if news_appearances:
@@ -2520,8 +2688,18 @@ def _render_prompt_tuning_comparison(news_df: pd.DataFrame):
 
 def _render_user_behavior_tab(df_view: pd.DataFrame, session_column: str):
     """
-    🟢 사용자 행동 데이터 탭
-    → "사용자가 우리가 만든 기능을 실제로 사용하고 있는가?"
+    🟢 사용자 행동 데이터 탭: "사용자가 우리가 만든 기능을 실제로 사용하고 있는가?"
+    
+    주요 분석 항목:
+    - 뉴스 클릭률 (CTR)
+    - 기사 읽기 시간 (Dwell Time)
+    - 요약 클릭률
+    - 용어 클릭률 및 인기 용어 Top 10
+    - 자연어 검색 성공률
+    - 검색 → 클릭 전환률
+    - URL 입력 기능 사용률
+    - 챗봇 질문 타입 분포
+    - 재방문 세션 수
     """
     st.markdown("### 🟢 사용자 행동 데이터 (User Behavior)")
     st.markdown("**목표**: 사용자의 실제 행동 패턴 분석 - MVP 기능의 가치 여부 판단")
@@ -2961,23 +3139,51 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                 df_view = df_view[(df_view["date"] >= selected_start_date) & (df_view["date"] <= selected_end_date)]
                 date_range_days = (selected_end_date - selected_start_date).days + 1
     
-    # ========== A. 상단 Summary (메트릭 카드 6개) ==========
+    # ========== A. 상단 Summary (메트릭 카드 9개) ==========
     st.markdown("#### 📈 핵심 지표 요약")
     
     # 1. DAU / WAU 계산 (한국 시간 기준)
+    # DAU: 오늘 날짜에 이벤트를 발생시킨 고유 사용자 수
+    # WAU: 최근 7일간 이벤트를 발생시킨 고유 사용자 수
+    # 주의: 날짜 필터가 적용된 경우에도 전체 기간 기준으로 계산
     if "user_id" in df_view.columns and "date" in df_view.columns:
+        # 원본 데이터에서 날짜 컬럼이 있는지 확인 (필터링 전)
         # 한국 시간 기준으로 오늘 날짜 계산
         today_kst = pd.Timestamp.now(tz="Asia/Seoul").date()
         week_ago = today_kst - pd.Timedelta(days=7)
         
+        # DAU: 오늘 날짜의 고유 사용자 수 (필터링된 df_view 기준)
         dau = df_view[df_view["date"] == today_kst]["user_id"].nunique()
+        
+        # WAU: 최근 7일간 고유 사용자 수
+        # 날짜 필터가 적용된 경우, 필터 범위 내에서만 계산
+        # 하지만 원본 데이터 전체를 사용하려면 render 함수에서 전체 데이터를 전달해야 함
         wau_df = df_view[df_view["date"] >= week_ago]
         wau = wau_df["user_id"].nunique()
+        
+        # 디버깅 정보 (확장 가능한 섹션에 표시)
+        with st.expander("🔍 DAU/WAU 계산 상세 정보", expanded=False):
+            st.markdown(f"**계산 기준 날짜**: {today_kst}")
+            st.markdown(f"**7일 전 날짜**: {week_ago}")
+            st.markdown(f"**데이터 범위**: {df_view['date'].min()} ~ {df_view['date'].max()}")
+            st.markdown(f"**필터링된 데이터 건수**: {len(df_view):,}건")
+            st.markdown(f"**최근 7일 데이터 건수**: {len(wau_df):,}건")
+            st.markdown(f"**전체 고유 user_id 수**: {df_view['user_id'].nunique()}명")
+            st.markdown(f"**최근 7일 고유 user_id 수**: {wau}명")
+            
+            # user_id 목록 표시 (상위 20개)
+            if wau > 0:
+                st.markdown("**최근 7일 활동 user_id 목록 (상위 20개)**:")
+                user_counts = wau_df.groupby("user_id").size().sort_values(ascending=False).head(20)
+                st.dataframe(user_counts.reset_index().rename(columns={0: "이벤트 수", "user_id": "User ID"}), use_container_width=True)
+                
+                st.info("💡 **참고**: user_id는 브라우저 localStorage에 저장됩니다. 로컬(`localhost`)과 배포 사이트는 다른 도메인이므로 각각 다른 user_id가 생성됩니다. 같은 사용자가 로컬과 배포 사이트에서 접속하면 2개의 user_id로 집계됩니다.")
     else:
         dau = 0
         wau = 0
     
     # 2. 평균 세션 길이 계산
+    # 각 세션의 첫 이벤트와 마지막 이벤트 시간 차이를 계산하여 평균
     if session_column in df_view.columns and "event_time" in df_view.columns:
         session_durations = []
         for session_id in df_view[session_column].dropna().unique():
@@ -3006,10 +3212,12 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     chat_usage_rate = (chat_sessions / total_sessions * 100) if total_sessions > 0 else 0
     
     # 6. 평균 뉴스 하이라이트 속도 (캐시 히트/미스 구분)
+    # news_detail_open 이벤트에서 하이라이트 처리 시간 추출
+    # 캐시 히트는 매우 빠르므로(3ms 정도) 별도로 구분하여 표시
     detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
     highlight_latencies = []
-    highlight_latencies_cache_miss = []  # 캐시 미스만
-    highlight_latencies_cache_hit = []   # 캐시 히트만
+    highlight_latencies_cache_miss = []  # 캐시 미스만 (실제 성능 문제 파악용)
+    highlight_latencies_cache_hit = []   # 캐시 히트만 (참고용)
     
     for idx, row in detail_events.iterrows():
         perf_data = _extract_perf_data(row)
@@ -3218,16 +3426,18 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     st.markdown("#### 🔽 행동 흐름 분석")
     
     # 뉴스 → Glossary → 챗봇 전환 퍼널 (세션 기반, 순차적)
+    # 순차적 퍼널: 각 단계는 이전 단계를 수행한 세션 중에서만 계산
     # 1단계: 뉴스 클릭한 세션 수
     news_click_sessions = df_view[df_view["event_name"] == "news_click"][session_column].nunique() if session_column in df_view.columns else 0
     
     if news_click_sessions > 0:
-        # 각 이벤트별 세션 집합
+        # 각 이벤트별 세션 집합 생성 (교집합 계산을 위해 set 사용)
         news_sessions = set(df_view[df_view["event_name"] == "news_click"][session_column].dropna().unique())
         glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
         chat_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
         
         # 2단계: 뉴스 클릭한 세션 중에서 Glossary도 클릭한 세션 수 (순차적)
+        # 교집합(&)을 사용하여 두 이벤트를 모두 수행한 세션만 계산
         glossary_after_news_sessions = len(news_sessions & glossary_sessions)  # 교집합
         
         # 3단계: 뉴스 클릭 AND Glossary 클릭한 세션 중에서 챗봇도 질문한 세션 수 (순차적)
@@ -3405,10 +3615,11 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     st.markdown("#### ⚡ 성능 분석")
     
     # 하이라이트 latency 데이터 추출 (캐시 히트/미스 구분)
+    # Content Quality 탭의 성능 분석에서 사용
     detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
-    highlight_latencies_cache_miss = []  # 캐시 미스만
-    highlight_latencies_cache_hit = []   # 캐시 히트만
-    highlight_latencies = []  # 전체 (fallback용)
+    highlight_latencies_cache_miss = []  # 캐시 미스만 (실제 성능 문제 파악용)
+    highlight_latencies_cache_hit = []   # 캐시 히트만 (참고용)
+    highlight_latencies = []  # 전체 (fallback용 - 캐시 정보가 없을 때)
     
     for idx, row in detail_events.iterrows():
         perf_data = _extract_perf_data(row)
