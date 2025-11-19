@@ -346,18 +346,14 @@ def _fill_sessions_from_time(
 # 메인 렌더링 함수
 # ============================================================================
 
-def render():
+def render(show_mode: str = "dashboard"):
     """
-    서버에서 데이터를 가져와서 로그 뷰어 렌더링
+    서버에서 데이터를 가져와서 대시보드/로그 뷰어 렌더링
     
-    세 개의 탭으로 구성:
-    1. 🔴 서비스 성능 데이터 (Service Health)
-    2. 🟡 뉴스 콘텐츠 품질 데이터 (Content Quality)
-    3. 🟢 사용자 행동 데이터 (User Behavior)
+    Args:
+        show_mode: "dashboard" 또는 "log_viewer"
     """
     from core.logger import _get_user_id
-    
-    st.markdown("## 📊 대시보드")
 
     with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
         df = _fetch_event_logs_from_supabase(user_id=None, limit=2000)
@@ -374,14 +370,10 @@ def render():
         df = _fill_sessions_from_time(df, threshold_minutes=session_gap_minutes)
         session_column = "session_id_resolved" if "session_id_resolved" in df.columns else "session_id"
 
-        # 최상위 탭: KPI Dashboard와 Log Viewer
-        main_tab1, main_tab2 = st.tabs([
-            "📊 KPI Dashboard",
-            "📁 Log Viewer"
-        ])
-        
-        # 📊 KPI Dashboard 탭
-        with main_tab1:
+        # show_mode에 따라 다른 페이지 표시
+        if show_mode == "dashboard":
+            st.markdown("## 📊 대시보드")
+            
             # KPI Dashboard 메인 페이지 (요약)
             _render_kpi_dashboard(df, session_column)
             
@@ -406,8 +398,8 @@ def render():
             with kpi_subtab3:
                 _render_user_behavior_tab(df, session_column)
         
-        # 📁 Log Viewer 탭
-        with main_tab2:
+        elif show_mode == "log_viewer":
+            st.markdown("## 📁 로그 뷰어")
             _render_log_viewer_tab(df, session_column)
 
 # ============================================================================
