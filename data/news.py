@@ -160,10 +160,10 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
     Supabase DB에서 최신 뉴스를 직접 가져옵니다.
     
     정렬 기준 (우선순위 순):
-    1. published_at 최신순 (가장 중요)
-    2. impact_score 높은 순 (두 번째)
-    3. credibility_score 높은 순 (세 번째)
-    4. urgency_score 높은 순 (네 번째)
+    1. published_at 최신순 (가장 중요 - 최신성 필수)
+    2. impact_score 높은 순 (두 번째 - 최신 뉴스 중 영향도 높은 것)
+    3. urgency_score 높은 순 (세 번째)
+    4. credibility_score 높은 순 (네 번째)
 
     Args:
         limit: 가져올 뉴스 개수 (기본값: 3)
@@ -192,13 +192,12 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
         import pandas as pd
         
         # news 테이블에서 뉴스 가져오기
-        # Supabase에서는 최신순으로 가져온 후, Python에서 점수 기준으로 재정렬
+        # 충분히 많이 가져온 후, Python에서 점수 기준으로 재정렬
         query = (
             supabase.table("news")
             .select("*")
             .is_("deleted_at", "null")
-            .order("published_at", desc=True)  # 먼저 최신순으로 가져오기
-            .limit(limit * 3)  # 더 많이 가져온 후 정렬 (높은 점수의 최신 뉴스 확보)
+            .limit(limit * 10)  # 충분히 많이 가져온 후 정렬 (높은 점수 뉴스 확보)
         )
         
         response = query.execute()
@@ -219,33 +218,33 @@ def _fetch_news_from_supabase(limit: int = 3) -> List[Dict]:
         if "published_at" in df.columns:
             df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce")
         
-        # 정렬 기준: published_at > impact_score > credibility_score > urgency_score
+        # 정렬 기준: published_at > impact_score > urgency_score > credibility_score
         # 점수가 NULL인 경우 -1로 변환하여 낮은 우선순위로 처리
         sort_columns = []
         ascending_list = []
         
         try:
-            # 1순위: published_at 최신순
+            # 1순위: published_at 최신순 (가장 중요 - 최신성 필수)
             if "published_at" in df.columns:
                 sort_columns.append("published_at")
                 ascending_list.append(False)
             
-            # 2순위: impact_score 높은 순
+            # 2순위: impact_score 높은 순 (최신 뉴스 중 영향도 높은 것)
             if "impact_score" in df.columns:
                 df["impact_score_sorted"] = df["impact_score"].fillna(-1)
                 sort_columns.append("impact_score_sorted")
                 ascending_list.append(False)
             
-            # 3순위: credibility_score 높은 순
-            if "credibility_score" in df.columns:
-                df["credibility_score_sorted"] = df["credibility_score"].fillna(-1)
-                sort_columns.append("credibility_score_sorted")
-                ascending_list.append(False)
-            
-            # 4순위: urgency_score 높은 순
+            # 3순위: urgency_score 높은 순
             if "urgency_score" in df.columns:
                 df["urgency_score_sorted"] = df["urgency_score"].fillna(-1)
                 sort_columns.append("urgency_score_sorted")
+                ascending_list.append(False)
+            
+            # 4순위: credibility_score 높은 순
+            if "credibility_score" in df.columns:
+                df["credibility_score_sorted"] = df["credibility_score"].fillna(-1)
+                sort_columns.append("credibility_score_sorted")
                 ascending_list.append(False)
             
             # 정렬 실행

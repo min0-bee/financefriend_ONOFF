@@ -196,10 +196,10 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
     Supabase에서 news 테이블 데이터 가져오기
     
     정렬 기준 (우선순위 순):
-    1. published_at 최신순 (가장 중요)
-    2. impact_score 높은 순 (두 번째)
-    3. credibility_score 높은 순 (세 번째)
-    4. urgency_score 높은 순 (네 번째)
+    1. published_at 최신순 (가장 중요 - 최신성 필수)
+    2. impact_score 높은 순 (두 번째 - 최신 뉴스 중 영향도 높은 것)
+    3. urgency_score 높은 순 (세 번째)
+    4. credibility_score 높은 순 (네 번째)
     
     필터:
     - deleted_at이 NULL인 뉴스만 (삭제되지 않은 뉴스)
@@ -213,17 +213,16 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
     
     try:
         # deleted_at이 NULL인 뉴스만 가져오기 (삭제되지 않은 뉴스)
-        # Supabase에서는 최신순으로 가져온 후, Python에서 점수 기준으로 재정렬
+        # 충분히 많이 가져온 후, Python에서 점수 기준으로 재정렬
         query = (
             supabase.table("news")
             .select("*")
             .is_("deleted_at", "null")
-            .order("published_at", desc=True)  # 먼저 최신순으로 가져오기
         )
         
         # limit이 매우 크면 제한 없이 가져오기 (모든 데이터 분석)
         if limit < 999999:
-            query = query.limit(limit * 3)  # 더 많이 가져온 후 정렬 (높은 점수의 최신 뉴스 확보)
+            query = query.limit(limit * 10)  # 충분히 많이 가져온 후 정렬 (높은 점수 뉴스 확보)
         
         response = query.execute()
         
@@ -236,32 +235,32 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors="coerce")
             
-            # 정렬 기준: published_at > impact_score > credibility_score > urgency_score
+            # 정렬 기준: published_at > impact_score > urgency_score > credibility_score
             # 점수가 NULL인 경우 -1로 변환하여 낮은 우선순위로 처리
             sort_columns = []
             ascending_list = []
             
-            # 1순위: published_at 최신순
+            # 1순위: published_at 최신순 (가장 중요 - 최신성 필수)
             if "published_at" in df.columns:
                 sort_columns.append("published_at")
                 ascending_list.append(False)
             
-            # 2순위: impact_score 높은 순
+            # 2순위: impact_score 높은 순 (최신 뉴스 중 영향도 높은 것)
             if "impact_score" in df.columns:
                 df["impact_score_sorted"] = df["impact_score"].fillna(-1)
                 sort_columns.append("impact_score_sorted")
                 ascending_list.append(False)
             
-            # 3순위: credibility_score 높은 순
-            if "credibility_score" in df.columns:
-                df["credibility_score_sorted"] = df["credibility_score"].fillna(-1)
-                sort_columns.append("credibility_score_sorted")
-                ascending_list.append(False)
-            
-            # 4순위: urgency_score 높은 순
+            # 3순위: urgency_score 높은 순
             if "urgency_score" in df.columns:
                 df["urgency_score_sorted"] = df["urgency_score"].fillna(-1)
                 sort_columns.append("urgency_score_sorted")
+                ascending_list.append(False)
+            
+            # 4순위: credibility_score 높은 순
+            if "credibility_score" in df.columns:
+                df["credibility_score_sorted"] = df["credibility_score"].fillna(-1)
+                sort_columns.append("credibility_score_sorted")
                 ascending_list.append(False)
             
             # 정렬 실행
@@ -1258,96 +1257,6 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
         if total_count > 0:
             issue_rate = (total_issue / total_count) * 100
             st.caption(f"문제 비율: {issue_rate:.1f}%")
-    
-    # 시간대별 누락/짧은 기사 비율 추이 (Line chart)
-    if "published_at" in news_df.columns and total_count > 0:
-        # published_at이 있는 데이터만 사용 (날짜별 추이 분석)
-        news_with_date = news_df[news_df["published_at"].notna()].copy()
-        
-        # 날짜가 없는 데이터가 있는 경우 정보 표시
-        news_without_date = news_df[news_df["published_at"].isna()]
-        if not news_without_date.empty:
-            # 날짜가 없는 데이터 중 문제가 있는 것도 확인
-            if content_col == "raw_content_length":
-                no_date_missing = news_without_date[news_without_date[content_col].isna() | (pd.to_numeric(news_without_date[content_col], errors='coerce') == 0)]
-                no_date_very_short = news_without_date[news_without_date[content_col].notna() & (pd.to_numeric(news_without_date[content_col], errors='coerce') < 100)]
-                no_date_short = news_without_date[
-                    news_without_date[content_col].notna() &
-                    (pd.to_numeric(news_without_date[content_col], errors='coerce') >= 100) &
-                    (pd.to_numeric(news_without_date[content_col], errors='coerce') < 300)
-                ]
-            else:
-                no_date_missing = news_without_date[news_without_date[content_col].isna() | (news_without_date[content_col] == "")]
-                content_lengths_no_date = news_without_date[content_col].astype(str).str.len()
-                no_date_very_short = news_without_date[
-                    news_without_date[content_col].notna() & 
-                    (news_without_date[content_col] != "") &
-                    (content_lengths_no_date < 100)
-                ]
-                no_date_short = news_without_date[
-                    news_without_date[content_col].notna() & 
-                    (news_without_date[content_col] != "") &
-                    (content_lengths_no_date >= 100) &
-                    (content_lengths_no_date < 300)
-                ]
-            
-            no_date_issues = len(no_date_missing) + len(no_date_very_short) + len(no_date_short)
-            if no_date_issues > 0:
-                st.info(f"ℹ️ 날짜 정보가 없는 뉴스 중 문제가 있는 기사: {no_date_issues}건 (그래프에 미포함)")
-        
-        if not news_with_date.empty:
-            news_with_date["date"] = news_with_date["published_at"].dt.date
-            
-            if content_col == "raw_content_length":
-                news_with_date["is_missing"] = news_with_date[content_col].isna() | (pd.to_numeric(news_with_date[content_col], errors='coerce') == 0)
-                news_with_date["is_very_short"] = news_with_date[content_col].notna() & (pd.to_numeric(news_with_date[content_col], errors='coerce') < 100)
-                news_with_date["is_short"] = (
-                    news_with_date[content_col].notna() & 
-                    (pd.to_numeric(news_with_date[content_col], errors='coerce') >= 100) &
-                    (pd.to_numeric(news_with_date[content_col], errors='coerce') < 300)
-                )
-            else:
-                news_with_date["is_missing"] = news_with_date[content_col].isna() | (news_with_date[content_col] == "")
-                content_lengths = news_with_date[content_col].astype(str).str.len()
-                news_with_date["is_very_short"] = (
-                    news_with_date[content_col].notna() & 
-                    (news_with_date[content_col] != "") &
-                    (content_lengths < 100)
-                )
-                news_with_date["is_short"] = (
-                    news_with_date[content_col].notna() & 
-                    (news_with_date[content_col] != "") &
-                    (content_lengths >= 100) &
-                    (content_lengths < 300)
-                )
-            
-            daily_stats = news_with_date.groupby("date").agg({
-                "is_missing": "sum",
-                "is_very_short": "sum",
-                "is_short": "sum"
-            }).reset_index()
-            daily_stats["total"] = news_with_date.groupby("date").size().values
-            daily_stats["missing_rate"] = (daily_stats["is_missing"] / daily_stats["total"] * 100).fillna(0)
-            daily_stats["very_short_rate"] = (daily_stats["is_very_short"] / daily_stats["total"] * 100).fillna(0)
-            daily_stats["short_rate"] = (daily_stats["is_short"] / daily_stats["total"] * 100).fillna(0)
-            daily_stats["issue_rate"] = ((daily_stats["is_missing"] + daily_stats["is_very_short"] + daily_stats["is_short"]) / daily_stats["total"] * 100).fillna(0)
-            
-            if px is not None and len(daily_stats) > 0:
-                fig = px.line(
-                    daily_stats,
-                    x="date",
-                    y=["missing_rate", "very_short_rate", "short_rate", "issue_rate"],
-                    title="일별 본문 품질 문제 비율 추이",
-                    labels={"date": "날짜", "value": "비율 (%)", "variable": "유형"},
-                    color_discrete_map={
-                        "missing_rate": "#ef4444",
-                        "very_short_rate": "#dc2626",
-                        "short_rate": "#b91c1c",
-                        "issue_rate": "#3b82f6"
-                    }
-                )
-                fig.update_traces(mode='lines+markers')
-                st.plotly_chart(fig, use_container_width=True)
     
     if total_count > 0 and px is not None:
         quality_df = pd.DataFrame({
