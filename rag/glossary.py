@@ -11,20 +11,200 @@ import hashlib
 import json
 import gzip
 import os
+import time
+import threading
 import pandas as pd
-from typing import Dict, List, Optional
-from financefriend_ONOFF.persona.persona import albwoong_persona_rewrite_section, albwoong_persona_reply
+from typing import Dict, List, Optional, Union
+from persona.persona import (
+    albwoong_persona_reply,
+    generate_structured_persona_reply,
+)
 from core.logger import get_supabase_client
 from core.config import SUPABASE_ENABLE
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
+import pickle
+import hashlib
+import json
+import gzip
+from core.logger import get_supabase_client
+from core.config import SUPABASE_ENABLE
 
 # ─────────────────────────────────────────────────────────────
 # 🚀 전역 캐시: 임베딩 모델 (세션 간 재사용)
+# - SentenceTransformer 모델은 메모리 사용량이 크므로 전역으로 캐시
+# - 모든 세션에서 동일한 모델 인스턴스 재사용
+# ✅ 최적화: st.cache_resource로 캐싱하므로 전역 변수 제거
 # ─────────────────────────────────────────────────────────────
-_embedding_model_cache = None
 _RAG_AVAILABLE = chromadb is not None and SentenceTransformer is not None
+
+# ─────────────────────────────────────────────────────────────
+# 🔍 문맥 인식: 경제 관련 키워드 목록 (하드코딩된 기본 키워드)
+# - CSV에서 추출한 용어별 키워드와 병합하여 사용
+# ─────────────────────────────────────────────────────────────
+BASE_FINANCIAL_KEYWORDS = [
+    '금융', '경제', '투자', '주식', '시장', '은행', '대출', '이자',
+    '환율', '통화', '정책', '중앙은행', '금리', '배당', '수익',
+    '자산', '부채', '자본', '매출', '이익', '손실', '경기',
+    '인플레이션', '디플레이션', 'GDP', 'CPI', 'PER', 'PBR',
+    '코스피', '코스닥', '주가', '상승', '하락', '변동', '조정',
+    '인상', '인하', '증가', '감소', '안정', '불안정', '유동성',
+    '채권', '펀드', '보험', '세금', '관세', '부동산', '원화', '달러'
+]
+
+# ─────────────────────────────────────────────────────────────
+# 🚫 부정 키워드: 이 키워드가 문맥에 있으면 경제 용어가 아님
+# - 브랜드명, 회사명, 인명 등이 포함된 경우
+# ─────────────────────────────────────────────────────────────
+NEGATIVE_KEYWORDS = [
+    '브랜드', '회사', '기업명', '상표', '제품명', '씨', '님', '사장', '대표',
+    '김치', '수출', '수입', '제조', '생산', '판매', '마케팅', '광고',
+    '대상', '종가', '삼성', 'LG', '현대', '기아', 'SK', '롯데', '신세계'
+]
+
+# ─────────────────────────────────────────────────────────────
+# 🔍 용어별 문맥 키워드 캐시 (CSV에서 동적으로 생성)
+# - 각 용어의 정의, 비유, 예시에서 키워드 추출
+# ─────────────────────────────────────────────────────────────
+_TERM_CONTEXT_KEYWORDS_CACHE = None
+
+def _extract_keywords_from_text(text: str) -> set:
+    """
+    텍스트에서 경제 관련 키워드 추출
+    - 명사, 경제 용어, 숫자 등을 추출
+    """
+    if not text:
+        return set()
+    
+    keywords = set()
+    
+    # 경제 관련 명사 패턴 (2-4자 한글) - 더 정확한 추출
+    # 단어 경계를 고려하여 추출
+    noun_pattern = re.compile(r'[가-힣]{2,4}')
+    nouns = noun_pattern.findall(text)
+    
+    # 경제 관련 키워드 필터링 (너무 일반적인 단어 제외)
+    stopwords = {'그것', '이것', '저것', '그런', '이런', '저런', '그때', '이때', '저때', '것은', '것이', '것을', '것을', '것도', '것만', '대상', '회사', '기업', '브랜드'}
+    # 경제 관련 키워드만 추출 (명확한 경제 용어)
+    financial_nouns = {'장', '마감', '거래', '가격', '주가', '코스피', '코스닥', '지수', '시장', '투자', '금융', '경제', '은행', '대출', '이자', '환율', '통화', '정책', '중앙은행', '금리', '배당', '수익', '자산', '부채', '자본', '매출', '이익', '손실', '경기', '인플레이션', '디플레이션', 'GDP', 'CPI', 'PER', 'PBR', '주가', '상승', '하락', '변동', '조정', '인상', '인하', '증가', '감소', '안정', '불안정', '유동성', '채권', '펀드', '보험', '세금', '관세', '부동산', '원화', '달러', '기준', '형성', '최종', '분석', '차트', '기준점', '평균가'}
+    
+    for noun in nouns:
+        if len(noun) >= 2 and noun not in stopwords:
+            # 경제 관련 명사이거나 3자 이상인 경우 추가
+            if noun in financial_nouns or len(noun) >= 3:  # 3자 이상은 더 신뢰할 수 있음
+                keywords.add(noun)
+    
+    # 영문 약어 (대문자 2-5자)
+    acronym_pattern = re.compile(r'\b[A-Z]{2,5}\b')
+    acronyms = acronym_pattern.findall(text)
+    keywords.update(acronyms)
+    
+    return keywords
+
+def _build_term_context_keywords() -> Dict[str, set]:
+    """
+    CSV에서 각 용어별 문맥 키워드를 동적으로 생성
+    - 정의, 비유, 예시에서 키워드 추출
+    - 용어별로 관련 키워드 세트 생성
+    """
+    global _TERM_CONTEXT_KEYWORDS_CACHE
+    
+    if _TERM_CONTEXT_KEYWORDS_CACHE is not None:
+        return _TERM_CONTEXT_KEYWORDS_CACHE
+    
+    term_keywords = {}
+    
+    try:
+        # CSV에서 용어 데이터 로드
+        df = load_glossary_from_csv()
+        if df.empty:
+            # CSV가 비어있으면 기본 키워드만 사용
+            st.warning("⚠️ CSV 파일이 비어있습니다. 기본 키워드만 사용합니다.")
+            _TERM_CONTEXT_KEYWORDS_CACHE = {}
+            return {}
+        
+        for _, row in df.iterrows():
+            term = str(row.get("금융용어", "")).strip()
+            if not term:
+                continue
+            
+            # 용어별 키워드 세트 생성
+            keywords = set()
+            
+            # 정의에서 키워드 추출
+            definition = str(row.get("정의", "")).strip()
+            if definition:
+                keywords.update(_extract_keywords_from_text(definition))
+            
+            # 비유에서 키워드 추출
+            analogy = str(row.get("비유", "")).strip()
+            if analogy:
+                keywords.update(_extract_keywords_from_text(analogy))
+            
+            # 예시에서 키워드 추출 (가장 중요 - 실제 사용 문맥)
+            example = str(row.get("예시", "")).strip()
+            if example:
+                keywords.update(_extract_keywords_from_text(example))
+            
+            # 용어 자체도 키워드에 추가
+            keywords.add(term)
+            
+            # 기본 경제 키워드도 추가
+            keywords.update(BASE_FINANCIAL_KEYWORDS)
+            
+            term_keywords[term] = keywords
+        
+        # 기본 사전 용어도 추가
+        for term, info in DEFAULT_TERMS.items():
+            if term not in term_keywords:
+                keywords = set()
+                if "정의" in info:
+                    keywords.update(_extract_keywords_from_text(info["정의"]))
+                if "비유" in info:
+                    keywords.update(_extract_keywords_from_text(info["비유"]))
+                keywords.add(term)
+                keywords.update(BASE_FINANCIAL_KEYWORDS)
+                term_keywords[term] = keywords
+        
+        _TERM_CONTEXT_KEYWORDS_CACHE = term_keywords
+        
+        # 디버깅: 생성된 키워드 수 확인
+        total_terms = len(term_keywords)
+        if total_terms > 0:
+            sample_term = list(term_keywords.keys())[0]
+            sample_keywords = term_keywords[sample_term]
+            # st.info(f"✅ {total_terms}개 용어의 키워드 생성 완료 (예: '{sample_term}' → {len(sample_keywords)}개 키워드)")
+        
+    except Exception as e:
+        # 오류 발생 시 기본 키워드만 사용
+        import traceback
+        st.warning(f"⚠️ 용어별 키워드 생성 중 오류: {e}\n{traceback.format_exc()}")
+        term_keywords = {}
+        for term in BASE_FINANCIAL_KEYWORDS:
+            term_keywords[term] = set(BASE_FINANCIAL_KEYWORDS)
+    
+    return term_keywords
+
+def get_financial_context_keywords(term: Optional[str] = None) -> set:
+    """
+    용어별 또는 전체 경제 관련 키워드 반환
+    
+    Args:
+        term: 특정 용어의 키워드만 원하는 경우 용어명, None이면 전체 기본 키워드
+    
+    Returns:
+        키워드 세트
+    """
+    if term:
+        term_keywords = _build_term_context_keywords()
+        result = term_keywords.get(term, set(BASE_FINANCIAL_KEYWORDS))
+        # 디버깅: 키워드가 비어있거나 너무 적으면 기본 키워드 사용
+        if not result or len(result) < 5:
+            result = set(BASE_FINANCIAL_KEYWORDS)
+        return result
+    else:
+        return set(BASE_FINANCIAL_KEYWORDS)
 
 # ─────────────────────────────────────────────────────────────
 # ✅ 기본 금융 용어 사전 (RAG/사전 없이도 동작하는 최소 세트)
@@ -59,6 +239,77 @@ DEFAULT_TERMS = {
     },
 }
 
+
+def _cache_rag_metadata(metadatas: List[Dict]):
+    """
+    RAG 메타데이터를 세션에 캐싱하여 반복적인 collection.get() 호출을 줄입니다.
+    term / synonym 모두 소문자로 키를 만들어 lookup 속도를 높이고,
+    하이라이트용 용어 세트도 함께 저장합니다.
+    """
+    metadata_map: Dict[str, Dict] = {}
+    highlight_terms = set()
+
+    for meta in metadatas:
+        term = (meta.get("term") or "").strip()
+        if term:
+            metadata_map[term.lower()] = meta
+            highlight_terms.add(term)
+
+        synonym_field = (meta.get("synonym") or "").strip()
+        if synonym_field:
+            for raw in re.split(r"[,\n]", synonym_field):
+                synonym = raw.strip()
+                if synonym:
+                    metadata_map[synonym.lower()] = meta
+                    highlight_terms.add(synonym)
+
+    st.session_state["rag_metadata_by_term"] = metadata_map
+    st.session_state["rag_terms_for_highlight"] = highlight_terms
+
+
+def _perf_enabled() -> bool:
+    return st.session_state.get("rag_perf_enable", True)
+
+
+def _perf_step(perf_enabled: bool, steps: List[Dict], label: str, start_time: float) -> float:
+    if not perf_enabled:
+        return time.perf_counter()
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    steps.append({"step": label, "ms": round(elapsed_ms, 2)})
+    return time.perf_counter()
+
+
+def _record_perf(section: str, steps: List[Dict]):
+    if not steps:
+        return
+    logs = st.session_state.setdefault("rag_perf_logs", {})
+    history = logs.setdefault(section, [])
+    history.append({
+        "timestamp": time.strftime("%H:%M:%S", time.localtime()),
+        "steps": steps,
+    })
+    logs[section] = history[-10:]
+    st.session_state[f"rag_last_{section}_perf"] = steps
+
+
+def _sync_supabase_async(documents, embeddings, metadatas, ids, checksum):
+    if not SUPABASE_ENABLE:
+        return
+    if st.session_state.get("rag_cache_synced") or st.session_state.get("rag_cache_sync_in_progress"):
+        return
+
+    def _worker():
+        try:
+            if _save_embeddings_to_supabase(documents, embeddings, metadatas, ids, checksum):
+                st.session_state["rag_cache_synced"] = True
+        except Exception as e:
+            st.session_state["rag_cache_sync_error"] = str(e)
+        finally:
+            st.session_state["rag_cache_sync_in_progress"] = False
+
+    st.session_state["rag_cache_sync_in_progress"] = True
+    threading.Thread(target=_worker, daemon=True).start()
+
 # ─────────────────────────────────────────────────────────────
 # 🧰 세션에 금융 용어 사전 보장 (RAG 통합 버전)
 #   - 변경 사항:
@@ -68,23 +319,112 @@ DEFAULT_TERMS = {
 # - Streamlit은 사용자별 세션 상태(st.session_state)를 제공
 # - 최초 1회만 DEFAULT_TERMS를 복사해 넣어 중간 변경에도 원본 보존
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# ⚡ 빠른 텍스트 사전 로드 (CSV에서 텍스트만 추출)
+# ─────────────────────────────────────────────────────────────
+def load_text_glossary_fast() -> Dict[str, Dict[str, str]]:
+    """
+    CSV에서 텍스트 사전만 빠르게 로드 (임베딩 없이)
+    - 하이라이트와 기본 설명에 사용
+    - 매우 빠름 (~0.1초)
+    """
+    terms_dict = {}
+    
+    try:
+        csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
+        if not os.path.exists(csv_path):
+            return DEFAULT_TERMS.copy()
+        
+        df = pd.read_csv(csv_path, encoding="utf-8")
+        df = df.fillna("")
+        
+        for _, row in df.iterrows():
+            term = str(row.get("금융용어", "")).strip()
+            if not term:
+                continue
+            
+            terms_dict[term] = {
+                "정의": str(row.get("정의", "")).strip(),
+                "비유": str(row.get("비유", "")).strip(),
+                "설명": str(row.get("정의", "")).strip(),  # 기본 설명
+                "유의어": str(row.get("유의어", "")).strip(),
+                "왜 중요?": str(row.get("왜 중요?", "")).strip(),
+                "오해 교정": str(row.get("오해 교정", "")).strip(),
+                "예시": str(row.get("예시", "")).strip(),
+            }
+    except Exception as e:
+        # CSV 로드 실패 시 기본 사전 사용
+        pass
+    
+    # 기본 사전과 병합 (기본 사전이 우선)
+    result = DEFAULT_TERMS.copy()
+    result.update(terms_dict)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔄 백그라운드에서 RAG 시스템 초기화
+# ─────────────────────────────────────────────────────────────
+def initialize_rag_system_background():
+    """
+    백그라운드 스레드에서 RAG 시스템 초기화
+    - UI를 블로킹하지 않음
+    - 초기화 완료 후 자동으로 활성화
+    """
+    if st.session_state.get("rag_initialized", False):
+        return
+    
+    if st.session_state.get("rag_loading", False):
+        return  # 이미 로딩 중
+    
+    if not _RAG_AVAILABLE:
+        st.session_state.rag_initialized = False
+        return
+    
+    def _load_in_background():
+        """백그라운드에서 실행되는 실제 로딩 함수"""
+        try:
+            st.session_state["rag_loading"] = True
+            st.session_state["rag_error"] = None
+            
+            # RAG 시스템 초기화 (백그라운드 모드로 실행)
+            initialize_rag_system(is_background=True)
+            
+            st.session_state["rag_loading"] = False
+        except Exception as e:
+            st.session_state["rag_loading"] = False
+            st.session_state["rag_error"] = str(e)
+    
+    # 백그라운드 스레드 시작
+    thread = threading.Thread(target=_load_in_background, daemon=True)
+    thread.start()
+
+
 def ensure_financial_terms():
     """
-    금융 용어 사전 초기화 및 RAG 시스템 자동 시작
-    - 세션 최초 실행 시 RAG 시스템을 초기화
+    금융 용어 사전 초기화 (Lazy Loading + 백그라운드 로딩)
+    
+    ✅ 최적화: 텍스트 사전만 먼저 로드 (0.1초) → 즉시 UI 표시
+    ✅ 최적화: RAG 시스템은 백그라운드에서 로드 → 사용자는 기다리지 않음
+    
+    - 세션 최초 실행 시 텍스트 사전만 빠르게 로드
+    - RAG 시스템은 백그라운드에서 초기화
     - Fallback으로 기본 용어 사전도 유지
     """
-    # 1️⃣ 기본 용어 사전 초기화 (Fallback용)
+    # 1️⃣ 텍스트 사전 빠르게 로드 (즉시 UI 표시 가능)
     if "financial_terms" not in st.session_state:
-        st.session_state.financial_terms = DEFAULT_TERMS.copy()
+        st.session_state.financial_terms = load_text_glossary_fast()
+        st.session_state["terms_text_ready"] = True
 
-    # 2️⃣ RAG 시스템 자동 초기화 (최초 1회만)
-    if "rag_initialized" not in st.session_state:
+    # 2️⃣ RAG 시스템 백그라운드 초기화 (UI 블로킹 없음)
+    if "rag_initialized" not in st.session_state and "rag_loading" not in st.session_state:
         if not _RAG_AVAILABLE:
             st.session_state.rag_initialized = False
-            st.warning("⚠️ 고급 용어 검색 모듈이 설치되지 않아 기본 사전을 사용합니다.")
         else:
-            initialize_rag_system()
+            # 백그라운드에서 초기화 시작
+            initialize_rag_system_background()
+
+
 
 # ─────────────────────────────────────────────────────────────
 # 🔴 기존 함수 (주석처리): 하드코딩된 사전 기반 하이라이트
@@ -110,84 +450,229 @@ def ensure_financial_terms():
 
 
 # ─────────────────────────────────────────────────────────────
-# ✨ 본문에서 금융 용어 하이라이트 (RAG 통합 버전)
+# 🔍 문맥 인식 함수: 문맥상 경제 용어인지 판단
+# ─────────────────────────────────────────────────────────────
+def is_financial_context(text: str, term: str, match_start: int, match_end: int, window_size: int = 50) -> bool:
+    """
+    문맥 윈도우 내에 경제 관련 키워드가 있는지 확인하여 경제 용어인지 판단
+    - CSV에서 추출한 용어별 키워드를 활용하여 더 정확한 판단
+    
+    Args:
+        text: 전체 텍스트
+        term: 확인할 용어
+        match_start: 매칭된 위치 시작
+        match_end: 매칭된 위치 끝
+        window_size: 주변 문맥 크기 (문자 수)
+    
+    Returns:
+        경제 용어로 사용된 경우 True
+    """
+    # 주변 문맥 추출
+    context_start = max(0, match_start - window_size)
+    context_end = min(len(text), match_end + window_size)
+    context = text[context_start:context_end].lower()
+    
+    # ⚡ 개선: CSV에서 추출한 용어별 키워드 사용
+    term_keywords = get_financial_context_keywords(term)
+    
+    # 디버깅: 키워드가 비어있거나 너무 적으면 기본 키워드 사용
+    if not term_keywords or len(term_keywords) < 5:
+        # 기본 키워드만 사용 (CSV에서 키워드 추출 실패한 경우)
+        term_keywords = set(BASE_FINANCIAL_KEYWORDS)
+    
+    # 🚫 부정 키워드 체크: 문맥에 부정 키워드가 있으면 경제 용어가 아님
+    context_lower = context.lower()
+    
+    # ⚠️ 특별 패턴 체크: "대상 종가" 같은 브랜드명 패턴
+    # "대상" 바로 앞뒤에 "종가"가 있으면 무조건 브랜드명
+    if term.lower() == '종가':
+        # "대상 종가" 또는 "종가" 앞뒤에 "대상"이 있는지 확인
+        target_pattern = r'\b대상\s*종가\b|\b종가\s*대상\b'
+        if re.search(target_pattern, context_lower, re.IGNORECASE):
+            return False  # 브랜드명으로 판단
+    
+    # 브랜드/회사명 관련 부정 키워드만 체크 (더 엄격)
+    brand_negative_keywords = ['대상', '종가', '삼성', 'LG', '현대', '기아', 'SK', '롯데', '신세계', '브랜드', '회사', '기업명', '상표', '제품명', '김치', '수출', '수입']
+    
+    # 부정 키워드가 문맥에 있는지 확인
+    found_negative_keyword = None
+    for neg_keyword in brand_negative_keywords:
+        # 단어 경계를 고려한 매칭 (더 정확함)
+        neg_pattern = r'\b' + re.escape(neg_keyword.lower()) + r'\b'
+        if re.search(neg_pattern, context_lower):
+            # 용어 자체가 부정 키워드인 경우는 제외 (예: "관세"는 부정 키워드이지만 경제 용어)
+            if neg_keyword.lower() != term.lower():
+                found_negative_keyword = neg_keyword
+                break
+    
+    # 부정 키워드가 발견된 경우
+    if found_negative_keyword:
+        # 강한 경제 키워드가 있는지 확인 (부정 키워드보다 우선순위가 높음)
+        strong_financial_keywords = ['코스피', '코스닥', '주가', '장', '마감', '거래', '가격', '지수', '시장', '투자', '금융', '경제', '상승', '하락', '변동', '매매', '체결', '호가']
+        has_financial_keyword = False
+        for fin_keyword in strong_financial_keywords:
+            fin_pattern = r'\b' + re.escape(fin_keyword.lower()) + r'\b'
+            if re.search(fin_pattern, context_lower):
+                has_financial_keyword = True
+                break
+        
+        # 부정 키워드가 있고 명확한 경제 키워드가 없으면 False
+        # 단, "수출", "국가" 같은 일반 단어는 경제 키워드로 인정하지 않음
+        if not has_financial_keyword:
+            return False
+    
+    # 주변 문맥에 용어별 관련 키워드가 있는지 확인
+    # ⚠️ 중요: 용어 자체는 제외 (용어가 문맥에 있다고 해서 경제 용어인 것은 아님)
+    # 예: "대상 종가"에서 "종가"가 있지만, "장", "마감", "거래", "가격", "주가", "코스피" 같은 키워드가 없으면 경제 용어가 아님
+    
+    # 키워드 매칭을 더 엄격하게: 단어 경계 고려
+    found_financial_keywords = []
+    for keyword in term_keywords:
+        if keyword and len(keyword) > 0 and keyword.lower() != term.lower():
+            # 단어 경계를 고려한 매칭 (더 정확함)
+            keyword_pattern = r'\b' + re.escape(keyword.lower()) + r'\b'
+            if re.search(keyword_pattern, context_lower):
+                found_financial_keywords.append(keyword)
+                return True  # 경제 관련 키워드가 문맥에 있으면 경제 용어로 판단
+    
+    # 기본 경제 키워드도 확인 (용어별 키워드에 없을 경우)
+    for keyword in BASE_FINANCIAL_KEYWORDS:
+        if keyword and len(keyword) > 0 and keyword.lower() != term.lower():
+            # 단어 경계를 고려한 매칭
+            keyword_pattern = r'\b' + re.escape(keyword.lower()) + r'\b'
+            if re.search(keyword_pattern, context_lower):
+                return True
+    
+    # 문맥에 경제 관련 키워드가 없으면 경제 용어가 아님
+    return False
+
+# ✨ 본문에서 금융 용어 하이라이트 (RAG 통합 버전 + 문맥 인식)
 # - 변경 사항:
 #   1. 기존: st.session_state.financial_terms 사전에서만 검색
 #   2. 신규: RAG에 저장된 모든 용어를 하이라이트 대상으로 사용
 #   3. Fallback: RAG 미초기화 시 기존 사전 사용
+#   4. ⚡ 문맥 인식: 문맥상 경제 용어가 아닌 경우 하이라이트 제외
 # - 기사 본문 텍스트에서 용어를 찾아 <mark> 태그로 감싸 강조
 # - 대소문자 무시(re.IGNORECASE) → 영문 약어 등에도 대응
 # - data-term 속성: 추후 JS/이벤트 연결 시 어떤 용어인지 식별 용이
 # - Streamlit 출력 시 st.markdown(..., unsafe_allow_html=True) 필요
 # ─────────────────────────────────────────────────────────────
-def highlight_terms(text: str) -> str:
+def highlight_terms(text: str, article_id: Optional[str] = None, return_matched_terms: bool = False, use_context_filter: bool = True) -> Union[str, tuple[str, set[str]]]:
     """
-    기사 본문에서 금융 용어를 찾아 하이라이트 처리
+    기사 본문에서 금융 용어를 찾아 하이라이트 처리 (캐싱 지원)
 
     Args:
-        text: 원본 텍스트 (기사 본문 등)
+        text: 원본 텍스트(기사 본문 등)
+        article_id: 기사 ID (캐싱 키로 사용, None이면 캐싱 안 함)
+        return_matched_terms: True일 경우 (하이라이트된 텍스트, 발견된 용어 세트) 튜플 반환
 
     Returns:
-        금융 용어가 하이라이트 처리된 HTML 문자열
+        return_matched_terms=False: 금융 용어가 하이라이트 처리된 HTML 문자열
+        return_matched_terms=True: (하이라이트된 HTML 문자열, 발견된 용어 세트) 튜플
     """
+    # ✅ 성능 개선: 기사별 하이라이트 결과 캐싱
+    if article_id:
+        cache_key = f"highlight_cache_{article_id}"
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        cache_entry = st.session_state.get(cache_key)
+        
+        # 캐시가 있고 텍스트가 변경되지 않았으면 캐시된 결과 반환
+        if cache_entry and cache_entry.get("text_hash") == text_hash:
+            cached_highlighted = cache_entry.get("highlighted", text)
+            if return_matched_terms:
+                cached_matched_terms = cache_entry.get("matched_terms", set())
+                return cached_highlighted, cached_matched_terms
+            return cached_highlighted
+    
     highlighted = text
     terms_to_highlight = set()
 
-    # 1️⃣ RAG가 초기화되어 있으면 RAG의 모든 용어 사용
-    if st.session_state.get("rag_initialized", False):
+    cached_terms = st.session_state.get("rag_terms_for_highlight")
+    if cached_terms:
+        terms_to_highlight = set(cached_terms)
+    elif st.session_state.get("rag_initialized", False):
         try:
-            collection = st.session_state.rag_collection
-            # 모든 문서의 메타데이터에서 용어 추출
+            collection = st.session_state.get("rag_collection")
+            if collection is None:
+                raise ValueError("RAG 컬렉션이 없습니다")
             all_data = collection.get()
             if all_data and all_data['metadatas']:
-                for metadata in all_data['metadatas']:
-                    term = metadata.get('term', '').strip()
-                    if term:
-                        terms_to_highlight.add(term)
-                    # 유의어도 하이라이트 대상에 추가
-                    # synonym = metadata.get('synonym', '').strip()
-                    # if synonym:
-                    #     terms_to_highlight.add(synonym)
+                _cache_rag_metadata(all_data['metadatas'])
+                terms_to_highlight = set(st.session_state.get("rag_terms_for_highlight", []))
         except Exception as e:
-            st.warning(f"⚠️ RAG 용어 로드 중 오류, 기본 사전 사용: {e}")
-            # Fallback: 기존 하드코딩된 사전 사용
+            st.warning(f"⚠️ RAG 용어 로드 중 오류, 기본 사전을 사용합니다: {e}")
             terms_to_highlight = set(st.session_state.get("financial_terms", DEFAULT_TERMS).keys())
     else:
-        # 2️⃣ RAG 미초기화 시 기존 사전 사용
         terms_to_highlight = set(st.session_state.get("financial_terms", DEFAULT_TERMS).keys())
 
-    # 3️⃣ 용어별로 하이라이트 처리
-    # 긴 용어부터 처리하여 부분 매칭 방지 (예: "부가가치세"가 "부가가치"보다 먼저 처리)
-    sorted_terms = sorted(terms_to_highlight, key=len, reverse=True)
+    # ✅ 성능 개선: 정렬된 용어 목록을 세션에 캐싱 (용어 목록이 변경되지 않는 한 재사용)
+    sorted_terms_cache_key = "highlight_sorted_terms_cache"
+    sorted_terms_hash_key = "highlight_sorted_terms_hash"
+    
+    current_terms_hash = hashlib.md5(str(sorted(terms_to_highlight)).encode('utf-8')).hexdigest()
+    cached_sorted_terms = st.session_state.get(sorted_terms_cache_key)
+    cached_terms_hash = st.session_state.get(sorted_terms_hash_key)
+    
+    if cached_sorted_terms and cached_terms_hash == current_terms_hash:
+        sorted_terms = cached_sorted_terms
+    else:
+        # 긴 용어부터 처리하여 부분 매칭 방지 (예: "부가가치세"가 "부가가치"보다 먼저 처리)
+        sorted_terms = sorted(terms_to_highlight, key=len, reverse=True)
+        st.session_state[sorted_terms_cache_key] = sorted_terms
+        st.session_state[sorted_terms_hash_key] = current_terms_hash
 
-    # 이미 하이라이트된 부분을 보호하기 위한 임시 플레이스홀더 사용
+    # ✅ 성능 개선: 정규식 패턴 컴파일 캐싱
+    pattern_cache_key = "highlight_pattern_cache"
+    if pattern_cache_key not in st.session_state:
+        st.session_state[pattern_cache_key] = {}
+    pattern_cache = st.session_state[pattern_cache_key]
+
+    # 이미 하이라이트된 부분을 보호하기 위한 임시 플레이스홀더 맵
     placeholders = {}
     placeholder_counter = 0
 
-    for term in sorted_terms:
-        if not term:  # 빈 문자열 스킵
-            continue
+    # ✅ 성능 개선: 빠른 사전 필터링 - 텍스트에 포함된 용어만 처리
+    text_lower = highlighted.lower()
+    terms_in_text = [term for term in sorted_terms if term and term.lower() in text_lower]
+    
+    # ✅ 성능 개선: 발견된 용어 추적 (용어 필터링 재사용을 위해)
+    matched_terms_set = set()
 
+    for term in terms_in_text:
         # 플레이스홀더가 아닌 실제 텍스트만 매칭하도록 패턴 생성
         # __PLACEHOLDER_로 시작하는 부분은 제외
         escaped_term = re.escape(term)
 
+        # ✅ 성능 개선: 정규식 패턴 캐싱
+        if escaped_term not in pattern_cache:
+            pattern_cache[escaped_term] = re.compile(escaped_term, re.IGNORECASE)
+        pattern = pattern_cache[escaped_term]
+
         # 매칭된 원래 표기를 유지하면서 하이라이트
         matches = []
-        pattern = re.compile(escaped_term, re.IGNORECASE)
-
         for match in pattern.finditer(highlighted):
             # 매칭된 위치가 플레이스홀더 안에 있는지 확인
             start_pos = match.start()
             # 매칭 위치 이전에 플레이스홀더가 있고 아직 닫히지 않았는지 체크
-            prefix = highlighted[:start_pos]
-            # 플레이스홀더 안에 있지 않은 경우만 저장
-            if '__PLACEHOLDER_' not in highlighted[max(0, start_pos-20):start_pos]:
-                matches.append(match)
+            # ✅ 성능 개선: 더 효율적인 플레이스홀더 체크
+            if start_pos > 0 and '__PLACEHOLDER_' in highlighted[max(0, start_pos-30):start_pos]:
+                continue
+            
+            # ⚡ 문맥 인식: 문맥상 경제 용어가 아닌 경우 제외
+            if use_context_filter:
+                is_financial = is_financial_context(text, term, match.start(), match.end())
+                if not is_financial:
+                    # 문맥상 경제 용어가 아니므로 하이라이트 제외
+                    continue
+            
+            matches.append(match)
 
         # 뒤에서부터 치환 (인덱스 변경 방지)
         for match in reversed(matches):
             matched_text = match.group(0)
+            # ✅ 성능 개선: 매칭된 용어 추적
+            matched_terms_set.add(term)
+            
             # HTML 태그 생성 (Streamlit은 클릭 이벤트를 지원하지 않으므로 시각적 표시만)
             placeholder = f"__PLACEHOLDER_{placeholder_counter}__"
             mark_html = (
@@ -205,12 +690,101 @@ def highlight_terms(text: str) -> str:
     for placeholder, mark_html in placeholders.items():
         highlighted = highlighted.replace(placeholder, mark_html)
 
+    # ✅ 성능 개선: 결과를 캐시에 저장
+    if article_id:
+        st.session_state[cache_key] = {
+            "text_hash": text_hash,
+            "highlighted": highlighted,
+            "matched_terms": matched_terms_set  # 발견된 용어도 함께 캐싱
+        }
+
+    # ✅ 성능 개선: 발견된 용어 반환 (용어 필터링 재사용)
+    if return_matched_terms:
+        return highlighted, matched_terms_set
+    
     return highlighted
 
-def _fmt(header_icon: str, header_text: str, body_md: str) -> str:
-    if not body_md or not body_md.strip():
-        return ""
-    return f"{header_icon} **{header_text}**\n\n{body_md}\n"
+def _build_structured_context_from_metadata(
+    base_term: str,
+    metadata: Dict[str, str],
+    question_term: Optional[str] = None,
+    synonym_matched: bool = False,
+) -> Dict[str, str]:
+    context: Dict[str, str] = {}
+
+    def _add(key: str, value: Optional[str]):
+        if value:
+            value = str(value).strip()
+            if value:
+                context[key] = value
+
+    _add("definition", metadata.get("definition"))
+    _add("analogy", metadata.get("analogy"))
+    _add("importance", metadata.get("importance"))
+    _add("correction", metadata.get("correction"))
+    _add("example", metadata.get("example"))
+    _add("synonym", metadata.get("synonym"))
+
+    if question_term and question_term.lower() != base_term.lower():
+        label = "question_term_synonym" if synonym_matched else "question_term"
+        _add(label, question_term)
+
+    context["term"] = base_term
+    context["source"] = "RAG"
+    return context
+
+
+def _build_structured_context_from_default(term: str, info: Dict[str, str]) -> Dict[str, str]:
+    context: Dict[str, str] = {}
+
+    mapping = {
+        "definition": info.get("정의"),
+        "detail": info.get("설명"),
+        "analogy": info.get("비유"),
+    }
+
+    for key, value in mapping.items():
+        if value:
+            value = str(value).strip()
+            if value:
+                context[key] = value
+
+    context["term"] = term
+    context["source"] = "DEFAULT_DICTIONARY"
+    return context
+
+
+def _generate_structured_term_response(
+    base_term: str,
+    context: Dict[str, str],
+    question_term: Optional[str] = None,
+    temperature: float = 0.25,
+) -> str:
+    question_text = question_term or base_term
+    user_prompt = f"{question_text}가 뭐야?"
+    response = generate_structured_persona_reply(
+        user_input=user_prompt,
+        term=base_term,
+        context=context,
+        temperature=temperature,
+    )
+    if response and "(LLM 연결 오류" not in response:
+        return response
+
+    # LLM 호출 실패 시 간단한 정보라도 제공
+    parts: List[str] = [f"🤖 **{base_term}** 에 대해 설명해줄게! 🎯"]
+    if context.get("definition"):
+        parts.append(f"📖 정의: {context['definition']}")
+    if context.get("detail"):
+        parts.append(f"💡 설명: {context['detail']}")
+    if context.get("importance"):
+        parts.append(f"❗ 왜 중요해?: {context['importance']}")
+    if context.get("analogy"):
+        parts.append(f"🌟 비유: {context['analogy']}")
+    if context.get("example"):
+        parts.append(f"📰 예시: {context['example']}")
+    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
+    return "\n".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -250,16 +824,32 @@ def _calculate_csv_checksum(csv_path: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# 🚀 임베딩 모델 로드 (전역 캐시 사용)
+# 🚀 임베딩 모델 로드 (st.cache_resource로 캐싱)
 # ─────────────────────────────────────────────────────────────
+@st.cache_resource
 def _get_embedding_model():
-    """임베딩 모델을 전역 캐시에서 로드하거나 새로 로드"""
-    global _embedding_model_cache
-    
-    if _embedding_model_cache is None:
-        _embedding_model_cache = SentenceTransformer('jhgan/ko-sroberta-multitask')
-    
-    return _embedding_model_cache
+    """
+    임베딩 모델을 로드 (st.cache_resource로 캐싱)
+    - 한 번 로드된 모델은 세션 간 재사용
+    - 리소스(메모리, 모델 파일)를 공유하므로 cache_resource 사용
+    """
+    return SentenceTransformer('jhgan/ko-sroberta-multitask')
+
+
+@st.cache_resource
+def _get_chroma_client():
+    """
+    ChromaDB 클라이언트 생성 (st.cache_resource로 캐싱)
+    - 한 번 생성된 클라이언트는 세션 간 재사용
+    - persistent 모드로 디스크에 저장
+    """
+    chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
+    return chromadb.PersistentClient(
+        path=chroma_db_path,
+        settings=Settings(
+            anonymized_telemetry=False
+        )
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -273,7 +863,8 @@ def _get_cache_dir():
 
 
 def _get_embeddings_cache_path():
-    """임베딩 벡터 캐시 파일 경로 (로컬은 압축 없음, 빠른 로드)"""
+    """임베딩 벡터 캐시 파일 경로"""
+
     return os.path.join(_get_cache_dir(), "embeddings.pkl")
 
 
@@ -304,7 +895,13 @@ def _save_embeddings_cache(documents: List[str], embeddings, metadatas: List[Dic
         }
         
         with open(_get_embeddings_cache_path(), 'wb') as f:
-            pickle.dump(cache_data, f)
+            pickle.dump({
+                'documents': documents,
+                'embeddings': embeddings,
+                'metadatas': metadatas,
+                'ids': ids
+            }, f)
+
         
         # 체크섬 저장
         with open(_get_checksum_cache_path(), 'w', encoding='utf-8') as f:
@@ -330,7 +927,8 @@ def _load_embeddings_cache(checksum: str) -> Optional[Dict]:
             if cached_data.get('checksum') != checksum:
                 return None  # CSV 파일이 변경됨
         
-        # 임베딩 벡터 로드 (압축 없음 - 빠른 로드)
+        # 임베딩 벡터 로드
+
         embeddings_path = _get_embeddings_cache_path()
         if not os.path.exists(embeddings_path):
             return None
@@ -364,7 +962,6 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
             'ids': ids
         }
         
-        # 2. pickle로 직렬화 후 gzip 압축
         pickled_data = pickle.dumps(cache_data)
         compressed_data = gzip.compress(pickled_data)
         
@@ -383,7 +980,7 @@ def _save_embeddings_to_supabase(documents: List[str], embeddings, metadatas: Li
         supabase.storage.from_(bucket_name).upload(
             storage_path,
             compressed_data,
-            file_options={"content-type": "application/gzip", "upsert": "true"}
+            file_options={"content-type": "application/octet-stream", "upsert": "true"}
         )
         
         # 5. 메타데이터를 테이블에 저장 (glossary_embeddings 테이블)
@@ -418,54 +1015,54 @@ def _load_embeddings_from_supabase(checksum: str) -> Optional[Dict]:
         return None
     
     try:
-        # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         bucket_name = "glossary-cache"
-        # 기존 .pkl 파일과 새 .pkl.gz 파일 모두 지원 (하위 호환성)
-        storage_path_gz = f"embeddings/{checksum}.pkl.gz"
-        storage_path_pkl = f"embeddings/{checksum}.pkl"
-        storage_path = storage_path_gz  # 기본값: 압축 파일
+        storage_path = None
         
+        # 1. 메타데이터 테이블에서 확인 (선택적, 없어도 진행)
         try:
-            # 메타데이터 확인 (있으면 체크섬 검증)
             result = supabase.table("glossary_embeddings").select("*").eq("checksum", checksum).execute()
             if result.data and len(result.data) > 0:
                 # 메타데이터가 있으면 해당 경로 사용
                 metadata = result.data[0]
-                storage_path = metadata.get("storage_path", storage_path_gz)
+                storage_path = metadata.get("storage_path")
         except:
             # 테이블이 없어도 Storage에서 직접 확인
             pass
         
-        # 2. Storage에서 다운로드 (압축 파일 우선, 없으면 기존 파일)
+        # 2. Storage에서 다운로드 시도 (.pkl.gz 우선, .pkl fallback)
+        if not storage_path:
+            # 메타데이터가 없으면 직접 경로 시도
+            storage_paths = [
+                f"embeddings/{checksum}.pkl.gz",  # 압축된 파일 우선
+                f"embeddings/{checksum}.pkl"      # 압축 안 된 파일 fallback
+            ]
+        else:
+            storage_paths = [storage_path]
+        
         response = None
-        try:
-            response = supabase.storage.from_(bucket_name).download(storage_path_gz)
-        except:
-            # 압축 파일이 없으면 기존 .pkl 파일 시도 (하위 호환성)
+        is_gzipped = False
+        
+        for path in storage_paths:
             try:
-                response = supabase.storage.from_(bucket_name).download(storage_path_pkl)
+                response = supabase.storage.from_(bucket_name).download(path)
+                if response:
+                    is_gzipped = path.endswith('.gz')
+                    break
             except:
-                pass
+                continue
         
         if not response:
             return None
         
-        # 3. gzip 압축 해제 후 pickle 역직렬화
-        try:
-            # gzip 압축된 데이터인지 확인 (압축 파일 확장자 또는 magic number)
-            is_gzipped = storage_path.endswith('.gz') or (len(response) >= 2 and response[:2] == b'\x1f\x8b')
-            if is_gzipped:
-                decompressed_data = gzip.decompress(response)
-                return pickle.loads(decompressed_data)
-            else:
-                # 기존 .pkl 파일 (압축 없음)
-                return pickle.loads(response)
-        except Exception as e:
-            # 압축 해제 실패 시 기존 방식으로 시도
-            try:
-                return pickle.loads(response)
-            except:
-                return None
+        # 3. gzip 압축 해제 (필요한 경우)
+        if is_gzipped:
+            decompressed_data = gzip.decompress(response)
+            cache_data = pickle.loads(decompressed_data)
+        else:
+            cache_data = pickle.loads(response)
+        
+        return cache_data
+
     
     except Exception as e:
         # 파일이 없거나 에러 발생 시 None 반환 (조용히 실패)
@@ -479,15 +1076,18 @@ def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
     """
     임베딩 벡터 로드 (하이브리드 방식)
     
+    ✅ 최적화: Supabase Storage를 우선 확인 (이미 올라가 있으면 빠르게 로드)
+    
     우선순위:
-    1. Supabase Storage (중앙 저장소, 빠른 다운로드)
-    2. 로컬 캐시 파일 (Fallback)
+    1. Supabase Storage (원격 저장소, 이미 올라가 있으면 즉시 사용)
+    2. 로컬 캐시 파일 (빠른 로컬 접근, Supabase 실패 시)
     3. None (새로 생성 필요)
     """
-    # 1순위: Supabase Storage
+    # ✅ 1순위: Supabase Storage (이미 올라가 있으면 우선 사용)
     cached_data = _load_embeddings_from_supabase(checksum)
     if cached_data:
-        # Supabase에서 로드 성공 시 로컬에도 백업 저장 (선택적)
+        st.session_state["rag_cache_source"] = "supabase"
+        # 로컬 캐시에도 저장하여 다음에는 더 빠르게 접근
         try:
             _save_embeddings_cache(
                 cached_data['documents'],
@@ -496,27 +1096,27 @@ def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
                 cached_data['ids'],
                 checksum
             )
+            st.session_state["rag_cache_synced"] = True
         except:
-            pass  # 로컬 저장 실패해도 무시
+            pass
         return cached_data
     
-    # 2순위: 로컬 캐시
+    # ✅ 2순위: 로컬 캐시 파일 (Supabase 실패 시)
     cached_data = _load_embeddings_cache(checksum)
     if cached_data:
-        # 로컬에 있으면 Supabase에도 백업 저장 (선택적, 비동기로 처리 가능)
-        try:
-            _save_embeddings_to_supabase(
-                cached_data['documents'],
-                cached_data['embeddings'],
-                cached_data['metadatas'],
-                cached_data['ids'],
-                checksum
-            )
-        except:
-            pass  # Supabase 저장 실패해도 무시
+        st.session_state["rag_cache_source"] = "local"
+        # 백그라운드에서 Supabase에 동기화 (다음에는 Supabase에서 빠르게 로드)
+        _sync_supabase_async(
+            cached_data['documents'],
+            cached_data['embeddings'],
+            cached_data['metadatas'],
+            cached_data['ids'],
+            checksum
+        )
         return cached_data
-    
-    # 3순위: 없음 (새로 생성 필요)
+
+    # ✅ 3순위: 없음 (새로 생성 필요)
+    st.session_state["rag_cache_source"] = "none"
     return None
 
 
@@ -527,77 +1127,99 @@ def _load_embeddings_with_fallback(checksum: str) -> Optional[Dict]:
 # - ChromaDB: persistent 모드로 디스크에 저장 (세션 간 유지)
 # - CSV 체크섬: 파일 변경 감지하여 자동 재임베딩
 # ─────────────────────────────────────────────────────────────
-def initialize_rag_system():
-    """RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (하이브리드 캐시)"""
+def initialize_rag_system(is_background: bool = False):
+    """
+    RAG 시스템 초기화: 벡터 DB 생성 및 금융용어 임베딩 (하이브리드 캐시)
+    
+    Args:
+        is_background: 백그라운드 스레드에서 실행 중이면 True (st.spinner 사용 안 함)
+    """
 
     # 세션에 이미 초기화되어 있으면 스킵
     if "rag_initialized" in st.session_state and st.session_state.rag_initialized:
         return
 
+    # 백그라운드 스레드 체크
+    is_background_thread = is_background or (threading.current_thread().name != "MainThread")
+    
+    # 스피너 컨텍스트 매니저 (백그라운드에서는 no-op)
+    class _noop_context:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    
+    spinner_context = _noop_context if is_background_thread else st.spinner
+
+    perf_enabled = _perf_enabled()
+    perf_steps: List[Dict] = []
+    total_start = time.perf_counter() if perf_enabled else 0.0
+    step_start = total_start
+    perf_logged = False
+
     try:
         # 1️⃣ CSV 로드 및 체크섬 계산
-        with st.spinner("📄 금융용어 파일 로드 중..."):
+        with spinner_context("📄 금융용어 파일 로드 중..."):
             csv_path = os.path.join(os.path.dirname(__file__), "glossary", "금융용어.csv")
             if not os.path.exists(csv_path):
-                st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
+                if not is_background_thread:
+                    st.warning(f"⚠️ 금융용어 파일을 찾을 수 없습니다: {csv_path}")
                 st.session_state.rag_initialized = False
                 return
-            
-            df = load_glossary_from_csv()
-            if df.empty:
-                st.warning("⚠️ CSV 파일이 비어있어 기본 용어 사전을 사용합니다.")
-                st.session_state.rag_initialized = False
-                return
-            
-            # CSV 파일 체크섬 계산 (변경 감지용)
+
+            df = pd.read_csv(csv_path, encoding="utf-8")
+            df = df.fillna("")
             csv_checksum = _calculate_csv_checksum(csv_path)
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "csv_load", step_start)
 
-        # 2️⃣ 임베딩 모델 로드 (전역 캐시 사용)
+        # 2️⃣ 임베딩 모델 로드 (st.cache_resource로 캐싱)
         # 첫 실행 시 모델 로드가 매우 느리므로 항상 스피너 표시
-        embedding_model = _get_embedding_model()
-        if embedding_model is None or _embedding_model_cache is None:
-            # 첫 실행 시 모델 로드 (10-20초 소요)
-            with st.spinner("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
-                embedding_model = _get_embedding_model()
+        with spinner_context("🤖 한국어 임베딩 모델 로드 중... (첫 실행 시 10-20초 소요)"):
+            embedding_model = _get_embedding_model()
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "model_ready", step_start)
 
-        # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드)
-        with st.spinner("💾 벡터 데이터베이스 초기화 중..."):
-            chroma_db_path = os.path.join(_get_cache_dir(), "chroma_db")
-            chroma_client = chromadb.PersistentClient(
-                path=chroma_db_path,
-                settings=Settings(
-                    anonymized_telemetry=False
-                )
-            )
+        # 3️⃣ ChromaDB 클라이언트 생성 (persistent 모드, st.cache_resource로 캐싱)
+        with spinner_context("💾 벡터 데이터베이스 초기화 중..."):
+            chroma_client = _get_chroma_client()
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "chroma_client", step_start)
 
         # 4️⃣ 하이브리드 방식으로 임베딩 로드 시도 (Supabase 우선, 로컬 Fallback)
-        with st.spinner("🔄 임베딩 벡터 로드 중..."):
+        with spinner_context("🔄 임베딩 벡터 로드 중..."):
             cached_data = _load_embeddings_with_fallback(csv_checksum)
-        
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "cache_lookup", step_start)
+
         # 5️⃣ 컬렉션 가져오기 또는 생성
         collection_name = "financial_terms"
-        with st.spinner("🔍 벡터 컬렉션 확인 중..."):
+        with spinner_context("🔍 벡터 컬렉션 확인 중..."):
             try:
                 collection = chroma_client.get_collection(name=collection_name)
-                # 컬렉션이 존재하고 캐시된 데이터가 있으면 빠른 종료
                 if collection.count() > 0 and cached_data is not None:
-                    # 캐시된 데이터 사용
                     documents = cached_data['documents']
                     metadatas = cached_data['metadatas']
                     ids = cached_data['ids']
-                    
-                    # 세션 상태에 저장
+
                     st.session_state.rag_collection = collection
                     st.session_state.rag_embedding_model = embedding_model
                     st.session_state.rag_initialized = True
                     st.session_state.rag_term_count = len(documents)
-                    
-                    # 캐시 소스 확인 (간단히 SUPABASE_ENABLE 여부만 확인)
-                    cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
-                    st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
-                    return  # 캐시 사용으로 빠른 종료
+                    _cache_rag_metadata(metadatas)
+                    st.session_state["rag_explanation_cache"] = {}
+
+                    if perf_enabled:
+                        step_start = _perf_step(perf_enabled, perf_steps, "cache_ready", step_start)
+                        perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2)})
+                        _record_perf("initialize", perf_steps)
+                        perf_logged = True
+
+                    if not is_background_thread:
+                        cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+                        st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
+                    return
                 elif cached_data is None:
-                    # CSV 파일이 변경되었거나 캐시가 없음 - 재생성 필요
                     try:
                         chroma_client.delete_collection(name=collection_name)
                     except:
@@ -607,22 +1229,20 @@ def initialize_rag_system():
                         metadata={"description": "금융 용어 사전 벡터 DB"}
                     )
             except:
-                # 컬렉션이 없으면 생성
                 collection = chroma_client.create_collection(
                     name=collection_name,
                     metadata={"description": "금융 용어 사전 벡터 DB"}
                 )
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "collection_ready", step_start)
 
-        # 6️⃣ 캐시된 데이터가 있으면 사용, 없으면 새로 생성
         if cached_data is not None:
-            # 캐시된 데이터 사용
-            with st.spinner("📦 캐시된 데이터 준비 중..."):
+            with spinner_context("📦 캐시된 데이터 준비 중..."):
                 documents = cached_data['documents']
                 embeddings = cached_data['embeddings']
                 metadatas = cached_data['metadatas']
                 ids = cached_data['ids']
-                
-                # 컬렉션에 데이터가 없으면 추가
+
                 if collection.count() == 0:
                     collection.add(
                         documents=documents,
@@ -630,24 +1250,24 @@ def initialize_rag_system():
                         embeddings=embeddings.tolist() if hasattr(embeddings, 'tolist') else embeddings,
                         ids=ids
                     )
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "cache_materialize", step_start)
+            _cache_rag_metadata(metadatas)
         else:
-            # 6️⃣ 캐시가 없거나 CSV가 변경됨 - 새로 생성
-            with st.spinner("📝 금융용어 데이터 준비 중..."):
+            with spinner_context("📝 금융용어 데이터 준비 중..."):
                 documents = []
                 metadatas = []
                 ids = []
 
                 for idx, row in df.iterrows():
                     term = str(row.get("금융용어", "")).strip()
-                    if not term:  # 빈 용어는 스킵
+                    if not term:
                         continue
 
-                    # 검색 문서: 용어 + 유의어 + 정의 + 비유를 결합
                     synonym = str(row.get("유의어", "")).strip()
                     definition = str(row.get("정의", "")).strip()
                     analogy = str(row.get("비유", "")).strip()
 
-                    # 벡터화할 텍스트 생성
                     search_text = f"{term}"
                     if synonym:
                         search_text += f" ({synonym})"
@@ -657,7 +1277,6 @@ def initialize_rag_system():
 
                     documents.append(search_text)
 
-                    # 메타데이터: 전체 정보 저장
                     metadatas.append({
                         "term": term,
                         "synonym": synonym,
@@ -670,46 +1289,61 @@ def initialize_rag_system():
                     })
 
                     ids.append(f"term_{idx}")
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "documents_prepared", step_start)
 
-            # 7️⃣ 임베딩 생성 및 DB에 추가
-            with st.spinner(f"🔄 {len(documents)}개 금융용어 벡터화 중..."):
+            with spinner_context(f"🔄 {len(documents)}개 금융용어 벡터화 중..."):
                 embeddings = embedding_model.encode(documents, show_progress_bar=False)
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "embedding_encode", step_start)
 
-                # 컬렉션에 추가
-                collection.add(
-                    documents=documents,
-                    metadatas=metadatas,
-                    embeddings=embeddings.tolist(),
-                    ids=ids
-                )
+            collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings.tolist(),
+                ids=ids
+            )
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "collection_populate", step_start)
 
-            # 8️⃣ 임베딩 벡터 저장 (하이브리드: Supabase 우선, 로컬 Fallback)
-            with st.spinner("💾 임베딩 벡터 저장 중..."):
-                # Supabase Storage에 저장 (1순위)
-                if _save_embeddings_to_supabase(documents, embeddings, metadatas, ids, csv_checksum):
-                    # Supabase 저장 성공 시 로컬에도 백업
-                    _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
-                else:
-                    # Supabase 실패 시 로컬에만 저장
-                    _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
+            with spinner_context("💾 임베딩 벡터 저장 중..."):
+                _save_embeddings_cache(documents, embeddings, metadatas, ids, csv_checksum)
+                st.session_state["rag_cache_synced"] = False
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "cache_save", step_start)
 
-        # 9️⃣ 세션 상태에 저장
+            _sync_supabase_async(documents, embeddings, metadatas, ids, csv_checksum)
+
         st.session_state.rag_collection = collection
         st.session_state.rag_embedding_model = embedding_model
         st.session_state.rag_initialized = True
         st.session_state.rag_term_count = len(documents)
+        _cache_rag_metadata(metadatas)
+        st.session_state["rag_explanation_cache"] = {}
 
-        # 캐시 사용 여부에 따른 메시지
-        if cached_data is not None:
-            cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
-            st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
-        else:
-            save_source = "Supabase + 로컬" if SUPABASE_ENABLE else "로컬"
-            st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, {save_source}에 저장됨)")
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "session_update", step_start)
+            perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2)})
+            _record_perf("initialize", perf_steps)
+            perf_logged = True
+
+        # 백그라운드 스레드에서는 UI 메시지 표시 안 함
+        if not is_background_thread:
+            if cached_data is not None:
+                cache_source = "Supabase" if SUPABASE_ENABLE else "로컬"
+                st.success(f"✅ RAG 시스템 초기화 완료! ({cache_source} 캐시 사용, {len(documents)}개 용어)")
+            else:
+                save_source = "Supabase + 로컬" if SUPABASE_ENABLE else "로컬"
+                st.success(f"✅ RAG 시스템 초기화 완료! ({len(documents)}개 용어 로드, {save_source}에 저장됨)")
 
     except Exception as e:
-        st.error(f"❌ RAG 초기화 실패: {e}")
+        if not is_background_thread:
+            st.error(f"❌ RAG 초기화 실패: {e}")
         st.session_state.rag_initialized = False
+    finally:
+        if perf_enabled and not perf_logged:
+            perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2)})
+            _record_perf("initialize", perf_steps)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -717,36 +1351,85 @@ def initialize_rag_system():
 # - 사용자 질문을 벡터화하여 유사한 용어 검색
 # - 상위 k개의 관련 용어 반환
 # ─────────────────────────────────────────────────────────────
-def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
-    """RAG를 사용하여 질문과 관련된 금융 용어 검색"""
+def search_terms_by_rag(query: str, top_k: int = 1, include_distances: bool = False) -> List[Dict]:
+    """RAG를 사용하여 질문과 관련된 금융 용어 검색
+    
+    Args:
+        query: 검색할 질문 또는 용어
+        top_k: 반환할 상위 k개 결과
+        include_distances: True일 경우 거리 정보도 포함하여 반환
+    
+    Returns:
+        검색된 용어 메타데이터 리스트 (include_distances=True일 경우 거리 정보 포함)
+    """
 
     if not st.session_state.get("rag_initialized", False):
         return []
+
+    perf_enabled = _perf_enabled()
+    perf_steps: List[Dict] = []
+    total_start = time.perf_counter() if perf_enabled else 0.0
+    step_start = total_start
+    perf_logged = False
 
     try:
         collection = st.session_state.rag_collection
         embedding_model = st.session_state.rag_embedding_model
 
-        # 쿼리 임베딩
-        query_embedding = embedding_model.encode([query])[0]
+        # ✅ 성능 개선: 임베딩 결과 캐싱 (동일 질문에 대한 재사용)
+        query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()
+        embedding_cache_key = f"rag_embedding_cache_{query_hash}"
+        
+        cached_embedding = st.session_state.get(embedding_cache_key)
+        if cached_embedding is not None:
+            # 캐시 히트: 임베딩 인코딩 생략 (거의 0ms)
+            query_embedding = cached_embedding
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "encode_cached", step_start)
+        else:
+            # 캐시 미스: 임베딩 인코딩 수행
+            query_embedding = embedding_model.encode([query])[0]
+            # 캐시에 저장 (다음 호출 시 즉시 사용)
+            st.session_state[embedding_cache_key] = query_embedding
+            if perf_enabled:
+                step_start = _perf_step(perf_enabled, perf_steps, "encode", step_start)
 
-        # 유사도 검색
+        # 거리 정보 포함 여부에 따라 include 파라미터 설정
+        include = ["metadatas"]
+        if include_distances:
+            include.append("distances")
+
         results = collection.query(
             query_embeddings=[query_embedding.tolist()],
-            n_results=top_k
+            n_results=top_k,
+            include=include
         )
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "query", step_start)
 
-        # 결과 포맷팅
         matched_terms = []
         if results and results['metadatas']:
-            for metadata in results['metadatas'][0]:
-                matched_terms.append(metadata)
+            for i, metadata in enumerate(results['metadatas'][0]):
+                term_data = metadata.copy()
+                # 거리 정보가 있으면 추가
+                if include_distances and results.get('distances') and results['distances'][0]:
+                    term_data['_distance'] = results['distances'][0][i]
+                matched_terms.append(term_data)
+        if perf_enabled:
+            step_start = _perf_step(perf_enabled, perf_steps, "format", step_start)
+            perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2), "info": {"top_k": top_k, "returned": len(matched_terms)}})
+            _record_perf("query", perf_steps)
+            perf_logged = True
 
         return matched_terms
 
     except Exception as e:
         st.error(f"❌ RAG 검색 중 오류: {e}")
         return []
+    finally:
+        if perf_enabled and not perf_logged:
+            perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2)})
+            _record_perf("query", perf_steps)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -757,23 +1440,45 @@ def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
 #   3. Fallback: RAG 실패 시 기존 방식으로 동작
 # ─────────────────────────────────────────────────────────────
 def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
-    """용어 설명 생성 (RAG 정확 매칭 우선, 실패 시 기본 사전 사용)"""
+    """
+    용어 설명 생성 (RAG 정확 매칭 우선, 실패 시 기존 사전 사용)
+
+    Args:
+        term: 설명할 금융 용어
+        chat_history: 채팅 이력 (향후 컨텍스트 강화용)
+        return_rag_info: True일 경우 (explanation, rag_info) 튜플 반환
+
+    Returns:
+        return_rag_info=False: 마크다운 형식의 용어 설명 문자열
+        return_rag_info=True: (마크다운 형식의 용어 설명, RAG 메타데이터 또는 None) 튜플
+    """
+
     rag_info: Optional[Dict] = None
+    metadata: Optional[Dict] = None
+    synonym_matched = False
 
     if st.session_state.get("rag_initialized", False):
         try:
-            collection = st.session_state.get("rag_collection")
-            if collection is None:
-                raise ValueError("RAG 컬렉션이 없습니다")
+            metadata_map = st.session_state.get("rag_metadata_by_term")
+            if not metadata_map:
+                collection = st.session_state.get("rag_collection")
+                if collection is None:
+                    raise ValueError("RAG 컬렉션이 없습니다")
+                all_data = collection.get()
+                if all_data and all_data["metadatas"]:
+                    _cache_rag_metadata(all_data["metadatas"])
+                    metadata_map = st.session_state.get("rag_metadata_by_term", {})
 
-            all_data = collection.get()
-            if all_data and all_data["metadatas"]:
-                for metadata in all_data["metadatas"]:
-                    rag_term = (metadata.get("term") or "").strip()
-                    synonym = (metadata.get("synonym") or "").strip()
-
-                    if rag_term.lower() != term.lower() and (not synonym or synonym.lower() != term.lower()):
-                        continue
+            if metadata_map:
+                metadata = metadata_map.get(term.lower())
+                if metadata:
+                    base_term = (metadata.get("term") or "").strip()
+                    synonym_field = (metadata.get("synonym") or "").strip()
+                    if synonym_field:
+                        synonyms = [s.strip().lower() for s in re.split(r"[,\n]", synonym_field) if s.strip()]
+                        synonym_matched = term.lower() in synonyms and term.lower() != base_term.lower()
+                    else:
+                        synonym_matched = False
 
                     definition = metadata.get("definition", "")
                     analogy = metadata.get("analogy", "")
@@ -781,45 +1486,37 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
                     correction = metadata.get("correction", "")
                     example = metadata.get("example", "")
 
+                    cache = st.session_state.setdefault("rag_explanation_cache", {})
+                    cache_key = base_term.lower()
+                    response = cache.get(cache_key)
+
+                    if response is None:
+                        structured_context = _build_structured_context_from_metadata(
+                            base_term=base_term,
+                            metadata=metadata,
+                            question_term=term,
+                            synonym_matched=synonym_matched,
+                        )
+                        response = _generate_structured_term_response(
+                            base_term=base_term,
+                            context=structured_context,
+                            question_term=term,
+                        )
+                        cache[cache_key] = response
+
                     if return_rag_info:
                         rag_info = {
                             "search_method": "exact_match",
-                            "matched_term": rag_term,
-                            "synonym_used": synonym.lower() == term.lower() if synonym else False,
+                            "matched_term": base_term,
+                            "synonym_used": synonym_matched,
                             "source": "rag"
                         }
-
-                    parts: List[str] = []
-                    parts.append(f"🤖 **{rag_term}** 에 대해 설명해줄게! 🎯\n")
-
-                    if definition:
-                        out = albwoong_persona_rewrite_section(definition, "정의", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("📖", "정의", out))
-
-                    if analogy:
-                        out = albwoong_persona_rewrite_section(analogy, "비유로 이해하기", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-                    if importance:
-                        out = albwoong_persona_rewrite_section(importance, "왜 중요할까?", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("❗", "왜 중요할까?", out))
-
-                    if correction:
-                        out = albwoong_persona_rewrite_section(correction, "흔한 오해", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("⚠️", "흔한 오해", out))
-
-                    if example:
-                        out = albwoong_persona_rewrite_section(example, "예시", term=rag_term, max_sentences=2)
-                        parts.append(_fmt("📰", "예시", out))
-
-                    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-                    response = "\n".join([p for p in parts if p])
 
                     if return_rag_info:
                         return response, rag_info
                     return response
         except Exception as e:
-            st.warning(f"⚠️ RAG 검색 중 오류, 기본 사전 사용: {e}")
+            st.warning(f"⚠️ RAG 검색 중 오류, 기본 사전을 사용합니다: {e}")
 
     terms = st.session_state.get("financial_terms", DEFAULT_TERMS)
 
@@ -830,23 +1527,12 @@ def explain_term(term: str, chat_history=None, return_rag_info: bool = False):
         return message
 
     info = terms[term]
-    parts: List[str] = []
-    parts.append(f"🤖 **{term}** 에 대해 설명해줄게! 🎯\n")
-
-    if info.get("정의"):
-        out = albwoong_persona_rewrite_section(info["정의"], "정의", term=term, max_sentences=2)
-        parts.append(_fmt("📖", "정의", out))
-
-    if info.get("비유"):
-        out = albwoong_persona_rewrite_section(info["비유"], "비유로 이해하기", term=term, max_sentences=2)
-        parts.append(_fmt("🌟", "비유로 이해하기", out))
-
-    if info.get("설명"):
-        out = albwoong_persona_rewrite_section(info["설명"], "쉬운 설명", term=term, max_sentences=2)
-        parts.append(_fmt("💡", "쉬운 설명", out))
-
-    parts.append("더 궁금한 점 있으면 편하게 물어봐!")
-    response = "\n".join([p for p in parts if p])
+    structured_context = _build_structured_context_from_default(term, info)
+    response = _generate_structured_term_response(
+        base_term=term,
+        context=structured_context,
+        question_term=term,
+    )
 
     if return_rag_info:
         return response, None
