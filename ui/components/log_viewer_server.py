@@ -835,7 +835,7 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
     - 기초 뉴스 지표 분석 + 라이다 차트
     - 프롬프트 튜닝용 샘플 기사 상세 비교
     - 검색 결과 뉴스 인기 분석
-    - URL 파싱 품질
+    - URL 파싱 품질image.png
     """
     st.markdown("### 🟡 뉴스 콘텐츠 품질 데이터 (Content Quality)")
     st.markdown("**목표**: 뉴스 콘텐츠의 품질 측정 - 서비스의 핵심 자산")
@@ -1611,23 +1611,13 @@ def _render_data_quality_consistency(news_df: pd.DataFrame):
     
     # 통계 요약
     total_count = len(valid_news)
-    avg_title_match = valid_news["title_content_match"].mean()
-    avg_url_match = valid_news["url_content_match"].mean()
-    avg_summary_match = valid_news["summary_content_match"].mean()
-    avg_quality_score = valid_news["quality_score"].mean()
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("제목-content 일치도", f"{avg_title_match:.1f}점")
-        st.caption("가중치: 70%")
-    with col2:
-        st.metric("URL-content 일치도", f"{avg_url_match:.1f}점")
-        st.caption("가중치: 10%")
-    with col3:
-        st.metric("summary-content 일치도", f"{avg_summary_match:.1f}점")
-        st.caption("가중치: 20%")
-    with col4:
-        st.metric("종합 품질 점수", f"{avg_quality_score:.1f}점")
+    # 히스토그램 평균선 표시용 평균 계산 (안전하게 처리)
+    avg_quality_score = 0.0
+    if not valid_news.empty and "quality_score" in valid_news.columns:
+        avg_quality_score = valid_news["quality_score"].mean()
+        if pd.isna(avg_quality_score):
+            avg_quality_score = 0.0
     
     # 품질 등급별 기술통계
     st.markdown("##### 📊 품질 등급별 점수 기술통계")
@@ -2823,8 +2813,10 @@ def _render_search_result_news_popularity(df_view: pd.DataFrame):
                 total_clicks = sum(news_clicks.values())
                 st.metric("총 클릭 수", f"{total_clicks:,}건")
             
-            # Top 10 인기 뉴스
-            top_10_df = popularity_df.head(10)
+            # Top 10 인기 뉴스 (클릭 수 높은 순으로 정렬)
+            top_10_df = popularity_df.head(10).copy()
+            # 차트에서도 클릭 수 높은 순으로 표시되도록 정렬 (내림차순)
+            top_10_df = top_10_df.sort_values("클릭 수", ascending=True)  # 차트는 아래에서 위로 올라가므로 오름차순
             
             if px is not None and len(top_10_df) > 0:
                 fig = px.bar(

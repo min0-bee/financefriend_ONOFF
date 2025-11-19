@@ -385,6 +385,7 @@ def highlight_terms(text: str, article_id: Optional[str] = None, return_matched_
         pattern = pattern_cache[escaped_term]
 
         # 매칭된 원래 표기를 유지하면서 하이라이트
+        # ✅ 개선: 같은 용어는 첫 번째 매칭만 하이라이트 (가독성 향상)
         matches = []
         for match in pattern.finditer(highlighted):
             # 매칭된 위치가 플레이스홀더 안에 있는지 확인
@@ -394,9 +395,12 @@ def highlight_terms(text: str, article_id: Optional[str] = None, return_matched_
             if start_pos > 0 and '__PLACEHOLDER_' in highlighted[max(0, start_pos-30):start_pos]:
                 continue
             matches.append(match)
+            # ✅ 개선: 첫 번째 매칭만 처리하고 중단
+            break
 
-        # 뒤에서부터 치환 (인덱스 변경 방지)
-        for match in reversed(matches):
+        # 첫 번째 매칭만 하이라이트 처리
+        if matches:
+            match = matches[0]
             matched_text = match.group(0)
             # ✅ 성능 개선: 매칭된 용어 추적
             matched_terms_set.add(term)
