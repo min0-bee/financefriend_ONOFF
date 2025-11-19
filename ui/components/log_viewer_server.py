@@ -219,8 +219,11 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
             .select("*")
             .is_("deleted_at", "null")
             .order("published_at", desc=True)  # 먼저 최신순으로 가져오기
-            .limit(limit * 3)  # 더 많이 가져온 후 정렬 (높은 점수의 최신 뉴스 확보)
         )
+        
+        # limit이 매우 크면 제한 없이 가져오기 (모든 데이터 분석)
+        if limit < 999999:
+            query = query.limit(limit * 3)  # 더 많이 가져온 후 정렬 (높은 점수의 최신 뉴스 확보)
         
         response = query.execute()
         
@@ -838,6 +841,33 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
     st.markdown("### 🟡 뉴스 콘텐츠 품질 데이터 (Content Quality)")
     st.markdown("**목표**: 뉴스 콘텐츠의 품질 측정 - 서비스의 핵심 자산")
     
+    # DB에 있는 뉴스 데이터 총 개수 표시
+    if SUPABASE_ENABLE:
+        supabase = get_supabase_client()
+        if supabase:
+            try:
+                # deleted_at이 NULL인 뉴스 총 개수 조회
+                # news_id만 선택하여 효율적으로 개수 확인
+                count_query = (
+                    supabase.table("news")
+                    .select("news_id")
+                    .is_("deleted_at", "null")
+                )
+                count_response = count_query.execute()
+                
+                # 응답에서 개수 확인
+                if count_response.data:
+                    total_news_count = len(count_response.data)
+                else:
+                    total_news_count = 0
+                
+                if total_news_count > 0:
+                    st.markdown(f"#### 📊 DB 뉴스 데이터 총 개수: **{total_news_count:,}건**")
+                else:
+                    st.info("📊 DB에 뉴스 데이터가 없습니다.")
+            except Exception as e:
+                st.warning(f"⚠️ 뉴스 데이터 개수 조회 실패: {str(e)}")
+    
     # 뉴스 소스 분석 (DB 뉴스 vs 임시 뉴스) - 이벤트 로그 기반
     _render_news_source_analysis(df_view)
     
@@ -849,7 +879,8 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
     
     # Supabase news 테이블 연동 분석
     with st.spinner("🔄 Supabase에서 뉴스 데이터를 가져오는 중..."):
-        news_df = _fetch_news_from_supabase(limit=5000)
+        # 모든 데이터 분석 (limit 제거)
+        news_df = _fetch_news_from_supabase(limit=999999)
         
         if news_df.empty:
             st.warning("⚠️ Supabase `news` 테이블에서 데이터를 가져올 수 없습니다.")
@@ -858,11 +889,11 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
             st.success(f"✅ {len(news_df):,}개의 뉴스 데이터를 불러왔습니다.")
             
             # 주요 분석 항목들
-            _render_news_source_distribution(news_df)
             _render_financial_news_ratio(news_df)
             _render_content_length_analysis(news_df)
             _render_content_missing_analysis(news_df)
             _render_title_content_duplication(news_df)
+            _render_data_quality_consistency(news_df)  # 제목-URL-content-summary 일치 여부 분석
             _render_impact_score_distribution(news_df)
             _render_duplicate_news_analysis(news_df)
             _render_news_collection_trends(news_df)
@@ -900,21 +931,36 @@ def _render_news_source_analysis(df_view: pd.DataFrame):
     
     news_events["is_temp"] = news_events["news_id"].apply(is_temp_news)
     
-    db_news_count = (~news_events["is_temp"]).sum()
-    temp_news_count = news_events["is_temp"].sum()
-    total_count = len(news_events)
+    # 고유한 news_id 기준으로 카운트 (중복 제거)
+    unique_news_ids = news_events["news_id"].unique()
+    unique_is_temp = [is_temp_news(nid) for nid in unique_news_ids]
+    
+    db_news_count = sum(1 for is_temp in unique_is_temp if not is_temp)
+    temp_news_count = sum(1 for is_temp in unique_is_temp if is_temp)
+    total_count = len(unique_news_ids)
+    
+    # 참고: 이벤트 건수도 표시 (중복 포함)
+    event_db_count = (~news_events["is_temp"]).sum()
+    event_temp_count = news_events["is_temp"].sum()
+    total_event_count = len(news_events)
     
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("DB 뉴스", f"{db_news_count:,}건")
+        st.caption(f"이벤트 건수: {event_db_count:,}건")
     with col2:
         st.metric("임시 뉴스 (URL 직접 입력)", f"{temp_news_count:,}건")
+        st.caption(f"이벤트 건수: {event_temp_count:,}건")
     with col3:
         if total_count > 0:
             temp_ratio = (temp_news_count / total_count) * 100
             st.metric("임시 뉴스 비율", f"{temp_ratio:.1f}%")
         else:
             st.metric("임시 뉴스 비율", "N/A")
+    
+    # 참고 정보 표시
+    if total_event_count > total_count:
+        st.info(f"💡 **참고**: 고유 뉴스 {total_count:,}개에 대해 총 {total_event_count:,}개의 이벤트가 발생했습니다. (같은 뉴스를 여러 번 클릭/사용한 경우 포함)")
     
     if total_count > 0 and px is not None:
         source_df = pd.DataFrame({
@@ -925,7 +971,7 @@ def _render_news_source_analysis(df_view: pd.DataFrame):
             source_df,
             values="건수",
             names="소스",
-            title="뉴스 소스 분포"
+            title="뉴스 소스 분포 (고유 뉴스 기준)"
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -965,12 +1011,16 @@ def _render_news_source_distribution(news_df: pd.DataFrame):
             x="출처",
             y="건수",
             title="뉴스 출처 Top 10",
-            labels={"출처": "언론사", "건수": "기사 수"}
+            labels={"출처": "언론사", "건수": "기사 수"},
+            text="건수"  # 막대 위에 숫자 표시
         )
+        fig.update_traces(texttemplate='%{text}', textposition='outside')
         fig.update_xaxes(tickangle=-45)
+        fig.update_layout(
+            height=400,
+            showlegend=False
+        )
         st.plotly_chart(fig, use_container_width=True)
-    
-    st.dataframe(top_sources, use_container_width=True, height=300)
 
 def _render_financial_news_ratio(news_df: pd.DataFrame):
     """금융/비금융 기사 비중"""
@@ -1148,37 +1198,62 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
         missing_content = news_df[news_df[content_col].isna() | (pd.to_numeric(news_df[content_col], errors='coerce') == 0)]
         missing_count = len(missing_content)
         
+        # 본문이 너무 짧은 경우도 누락으로 간주 (300자 미만 - 사용 불가 수준)
+        # 100자 미만: 매우 짧음 (사용 불가)
+        # 200자 미만: 짧음 (사용 어려움)
+        # 300자 미만: 경고 (너무 짧음)
+        very_short_content = news_df[
+            news_df[content_col].notna() &
+            (pd.to_numeric(news_df[content_col], errors='coerce') < 100)
+        ]
         short_content = news_df[
             news_df[content_col].notna() &
-            (pd.to_numeric(news_df[content_col], errors='coerce') < 50)
+            (pd.to_numeric(news_df[content_col], errors='coerce') >= 100) &
+            (pd.to_numeric(news_df[content_col], errors='coerce') < 300)
         ]
+        very_short_count = len(very_short_content)
         short_count = len(short_content)
     else:
         # content 컬럼인 경우
         missing_content = news_df[news_df[content_col].isna() | (news_df[content_col] == "")]
         missing_count = len(missing_content)
         
-        # 본문이 너무 짧은 경우도 누락으로 간주 (50자 미만)
+        # 본문이 너무 짧은 경우도 누락으로 간주 (300자 미만 - 사용 불가 수준)
+        # 100자 미만: 매우 짧음 (사용 불가)
+        # 200자 미만: 짧음 (사용 어려움)
+        # 300자 미만: 경고 (너무 짧음)
+        very_short_content = news_df[
+            news_df[content_col].notna() & 
+            (news_df[content_col] != "") &
+            (news_df[content_col].astype(str).str.len() < 100)
+        ]
         short_content = news_df[
             news_df[content_col].notna() & 
             (news_df[content_col] != "") &
-            (news_df[content_col].astype(str).str.len() < 50)
+            (news_df[content_col].astype(str).str.len() >= 100) &
+            (news_df[content_col].astype(str).str.len() < 300)
         ]
+        very_short_count = len(very_short_content)
         short_count = len(short_content)
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("본문 완전 누락", f"{missing_count:,}건")
         if total_count > 0:
             missing_rate = (missing_count / total_count) * 100
             st.caption(f"누락률: {missing_rate:.1f}%")
     with col2:
-        st.metric("본문 짧음 (<50자)", f"{short_count:,}건")
+        st.metric("매우 짧음 (<100자)", f"{very_short_count:,}건")
+        if total_count > 0:
+            very_short_rate = (very_short_count / total_count) * 100
+            st.caption(f"비율: {very_short_rate:.1f}%")
+    with col3:
+        st.metric("짧음 (100-300자)", f"{short_count:,}건")
         if total_count > 0:
             short_rate = (short_count / total_count) * 100
             st.caption(f"비율: {short_rate:.1f}%")
-    with col3:
-        total_issue = missing_count + short_count
+    with col4:
+        total_issue = missing_count + very_short_count + short_count
         st.metric("총 문제 기사", f"{total_issue:,}건")
         if total_count > 0:
             issue_rate = (total_issue / total_count) * 100
@@ -1186,40 +1261,88 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
     
     # 시간대별 누락/짧은 기사 비율 추이 (Line chart)
     if "published_at" in news_df.columns and total_count > 0:
+        # published_at이 있는 데이터만 사용 (날짜별 추이 분석)
         news_with_date = news_df[news_df["published_at"].notna()].copy()
+        
+        # 날짜가 없는 데이터가 있는 경우 정보 표시
+        news_without_date = news_df[news_df["published_at"].isna()]
+        if not news_without_date.empty:
+            # 날짜가 없는 데이터 중 문제가 있는 것도 확인
+            if content_col == "raw_content_length":
+                no_date_missing = news_without_date[news_without_date[content_col].isna() | (pd.to_numeric(news_without_date[content_col], errors='coerce') == 0)]
+                no_date_very_short = news_without_date[news_without_date[content_col].notna() & (pd.to_numeric(news_without_date[content_col], errors='coerce') < 100)]
+                no_date_short = news_without_date[
+                    news_without_date[content_col].notna() &
+                    (pd.to_numeric(news_without_date[content_col], errors='coerce') >= 100) &
+                    (pd.to_numeric(news_without_date[content_col], errors='coerce') < 300)
+                ]
+            else:
+                no_date_missing = news_without_date[news_without_date[content_col].isna() | (news_without_date[content_col] == "")]
+                content_lengths_no_date = news_without_date[content_col].astype(str).str.len()
+                no_date_very_short = news_without_date[
+                    news_without_date[content_col].notna() & 
+                    (news_without_date[content_col] != "") &
+                    (content_lengths_no_date < 100)
+                ]
+                no_date_short = news_without_date[
+                    news_without_date[content_col].notna() & 
+                    (news_without_date[content_col] != "") &
+                    (content_lengths_no_date >= 100) &
+                    (content_lengths_no_date < 300)
+                ]
+            
+            no_date_issues = len(no_date_missing) + len(no_date_very_short) + len(no_date_short)
+            if no_date_issues > 0:
+                st.info(f"ℹ️ 날짜 정보가 없는 뉴스 중 문제가 있는 기사: {no_date_issues}건 (그래프에 미포함)")
+        
         if not news_with_date.empty:
             news_with_date["date"] = news_with_date["published_at"].dt.date
             
             if content_col == "raw_content_length":
                 news_with_date["is_missing"] = news_with_date[content_col].isna() | (pd.to_numeric(news_with_date[content_col], errors='coerce') == 0)
-                news_with_date["is_short"] = news_with_date[content_col].notna() & (pd.to_numeric(news_with_date[content_col], errors='coerce') < 50)
+                news_with_date["is_very_short"] = news_with_date[content_col].notna() & (pd.to_numeric(news_with_date[content_col], errors='coerce') < 100)
+                news_with_date["is_short"] = (
+                    news_with_date[content_col].notna() & 
+                    (pd.to_numeric(news_with_date[content_col], errors='coerce') >= 100) &
+                    (pd.to_numeric(news_with_date[content_col], errors='coerce') < 300)
+                )
             else:
                 news_with_date["is_missing"] = news_with_date[content_col].isna() | (news_with_date[content_col] == "")
+                content_lengths = news_with_date[content_col].astype(str).str.len()
+                news_with_date["is_very_short"] = (
+                    news_with_date[content_col].notna() & 
+                    (news_with_date[content_col] != "") &
+                    (content_lengths < 100)
+                )
                 news_with_date["is_short"] = (
                     news_with_date[content_col].notna() & 
                     (news_with_date[content_col] != "") &
-                    (news_with_date[content_col].astype(str).str.len() < 50)
+                    (content_lengths >= 100) &
+                    (content_lengths < 300)
                 )
             
             daily_stats = news_with_date.groupby("date").agg({
                 "is_missing": "sum",
+                "is_very_short": "sum",
                 "is_short": "sum"
             }).reset_index()
             daily_stats["total"] = news_with_date.groupby("date").size().values
             daily_stats["missing_rate"] = (daily_stats["is_missing"] / daily_stats["total"] * 100).fillna(0)
+            daily_stats["very_short_rate"] = (daily_stats["is_very_short"] / daily_stats["total"] * 100).fillna(0)
             daily_stats["short_rate"] = (daily_stats["is_short"] / daily_stats["total"] * 100).fillna(0)
-            daily_stats["issue_rate"] = ((daily_stats["is_missing"] + daily_stats["is_short"]) / daily_stats["total"] * 100).fillna(0)
+            daily_stats["issue_rate"] = ((daily_stats["is_missing"] + daily_stats["is_very_short"] + daily_stats["is_short"]) / daily_stats["total"] * 100).fillna(0)
             
             if px is not None and len(daily_stats) > 0:
                 fig = px.line(
                     daily_stats,
                     x="date",
-                    y=["missing_rate", "short_rate", "issue_rate"],
+                    y=["missing_rate", "very_short_rate", "short_rate", "issue_rate"],
                     title="일별 본문 품질 문제 비율 추이",
                     labels={"date": "날짜", "value": "비율 (%)", "variable": "유형"},
                     color_discrete_map={
                         "missing_rate": "#ef4444",
-                        "short_rate": "#f59e0b",
+                        "very_short_rate": "#dc2626",
+                        "short_rate": "#b91c1c",
                         "issue_rate": "#3b82f6"
                     }
                 )
@@ -1228,16 +1351,68 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
     
     if total_count > 0 and px is not None:
         quality_df = pd.DataFrame({
-            "상태": ["정상", "누락", "짧음"],
-            "건수": [total_count - total_issue, missing_count, short_count]
+            "상태": ["정상", "누락", "매우 짧음 (<100자)", "짧음 (100-300자)"],
+            "건수": [total_count - total_issue, missing_count, very_short_count, short_count]
         })
         fig = px.pie(
             quality_df,
             values="건수",
             names="상태",
-            title="본문 품질 상태"
+            title="본문 품질 상태",
+            color_discrete_map={
+                "정상": "#10b981",
+                "누락": "#ef4444",
+                "매우 짧음 (<100자)": "#dc2626",
+                "짧음 (100-300자)": "#b91c1c"
+            }
         )
         st.plotly_chart(fig, use_container_width=True)
+        
+        # 문제가 있는 뉴스 상세 목록 (300자 미만)
+        if total_issue > 0:
+            st.markdown("##### ⚠️ 본문이 너무 짧은 뉴스 목록 (300자 미만)")
+            problem_news = pd.concat([missing_content, very_short_content, short_content]).drop_duplicates()
+            
+            if not problem_news.empty:
+                problem_display_cols = []
+                if "news_id" in problem_news.columns:
+                    problem_display_cols.append("news_id")
+                elif "display_id" in problem_news.columns:
+                    problem_display_cols.append("display_id")
+                
+                problem_display_cols.extend(["title", "url", "source"])
+                if content_col == "content":
+                    problem_news["content_length"] = problem_news[content_col].astype(str).str.len()
+                else:
+                    problem_news["content_length"] = pd.to_numeric(problem_news[content_col], errors='coerce')
+                
+                problem_display_cols.append("content_length")
+                
+                available_problem_cols = [col for col in problem_display_cols if col in problem_news.columns]
+                problem_df = problem_news[available_problem_cols].copy()
+                
+                # 컬럼명 한글화
+                problem_column_mapping = {
+                    "news_id": "뉴스 ID",
+                    "display_id": "뉴스 ID",
+                    "title": "제목",
+                    "url": "URL",
+                    "source": "뉴스처",
+                    "content_length": "본문 길이 (자)"
+                }
+                problem_df.columns = [problem_column_mapping.get(col, col) for col in problem_df.columns]
+                
+                # 제목과 URL 길이 제한
+                if "제목" in problem_df.columns:
+                    problem_df["제목"] = problem_df["제목"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
+                if "URL" in problem_df.columns:
+                    problem_df["URL"] = problem_df["URL"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
+                
+                # 본문 길이 순으로 정렬 (짧은 순)
+                if "본문 길이 (자)" in problem_df.columns:
+                    problem_df = problem_df.sort_values("본문 길이 (자)", ascending=True)
+                
+                st.dataframe(problem_df, use_container_width=True, height=400)
 
 def _render_title_content_duplication(news_df: pd.DataFrame):
     """제목·본문 중복률"""
@@ -1297,6 +1472,443 @@ def _render_title_content_duplication(news_df: pd.DataFrame):
             title="제목·본문 중복 분포"
         )
         st.plotly_chart(fig, use_container_width=True)
+
+def _render_data_quality_consistency(news_df: pd.DataFrame):
+    """
+    데이터 품질 일치 여부 분석: 제목-URL-content-summary 일치도
+    
+    분석 기준:
+    1. 제목-content 일치도: 제목의 핵심 키워드가 content에 포함되는지 (가중치: 70%)
+    2. URL-content 일치도: URL 도메인/경로와 content의 관련성 (가중치: 10%)
+    3. summary-content 일치도: summary가 content를 정확히 요약하는지 (가중치: 20%)
+    4. 종합 품질 점수: 위 3가지 기준의 가중 평균
+    """
+    required_columns = ["title", "content"]
+    missing_columns = [col for col in required_columns if col not in news_df.columns]
+    
+    if missing_columns:
+        return
+    
+    st.markdown("#### 🔍 데이터 품질 일치 여부 분석 (제목-URL-content-summary)")
+    st.markdown("**목적**: 제목, URL, content, summary 간의 일치 여부를 확인하여 데이터 품질 문제를 발견")
+    
+    # 필수 컬럼이 있는 뉴스만 분석
+    valid_news = news_df[
+        news_df["title"].notna() & 
+        (news_df["title"] != "") &
+        news_df["content"].notna() & 
+        (news_df["content"] != "")
+    ].copy()
+    
+    if valid_news.empty:
+        st.info("📊 제목과 본문이 모두 있는 뉴스가 없습니다.")
+        return
+    
+    # news_id가 없으면 display_id 추가 (표시용)
+    if "news_id" not in valid_news.columns:
+        valid_news["display_id"] = valid_news.index
+    
+    # 키워드 추출 함수 (한글, 영문, 숫자만)
+    def extract_keywords(text, min_length=2):
+        """텍스트에서 핵심 키워드 추출"""
+        if not text or pd.isna(text):
+            return set()
+        text_str = str(text).strip()
+        if not text_str:
+            return set()
+        
+        # 한글, 영문, 숫자만 추출
+        import re
+        keywords = re.findall(r'[가-힣a-zA-Z0-9]+', text_str)
+        # 최소 길이 이상이고, 너무 일반적인 단어 제외
+        stopwords = {'그', '이', '저', '것', '수', '때', '등', '및', '또', '또한', '그리고', 
+                     'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had'}
+        keywords = [kw for kw in keywords if len(kw) >= min_length and kw.lower() not in stopwords]
+        return set(keywords)
+    
+    # 제목-content 일치도 계산 (불량 뉴스 필터링을 위해 엄격한 기준)
+    def calculate_title_content_match(row):
+        """제목과 content의 일치도 계산 (0-100) - 엄격한 기준"""
+        title = str(row.get("title", "")).strip()
+        content = str(row.get("content", "")).strip()
+        
+        if not title or not content:
+            return 30  # 데이터가 없으면 낮은 점수
+        
+        # content 길이 체크 (너무 짧으면 감점)
+        content_length = len(content)
+        length_penalty = 0
+        if content_length < 100:  # 100자 미만
+            length_penalty = -30  # 30점 감점
+        elif content_length < 200:  # 200자 미만
+            length_penalty = -20  # 20점 감점
+        elif content_length < 300:  # 300자 미만
+            length_penalty = -10  # 10점 감점
+        
+        # 제목의 키워드 추출
+        title_keywords = extract_keywords(title, min_length=2)
+        if not title_keywords:
+            return 30  # 키워드가 없으면 낮은 점수
+        
+        # content의 키워드 추출 (앞부분 2000자)
+        content_preview = content[:2000]
+        content_keywords = extract_keywords(content_preview, min_length=2)
+        
+        # 제목 키워드가 content에 포함된 비율
+        matched_keywords = title_keywords & content_keywords
+        match_ratio = len(matched_keywords) / len(title_keywords) if title_keywords else 0
+        
+        # 제목 자체가 content 앞부분에 포함되는지 확인 (더 엄격하게)
+        title_in_content = title in content[:300]  # 범위 축소
+        title_match_bonus = 20 if title_in_content else 0
+        
+        # 키워드 매칭이 핵심 (더 엄격한 기준)
+        # 키워드 매칭 비율이 낮으면 낮은 점수
+        if match_ratio < 0.3:  # 30% 미만 매칭
+            base_score = 20
+        elif match_ratio < 0.5:  # 50% 미만 매칭
+            base_score = 35
+        elif match_ratio < 0.7:  # 70% 미만 매칭
+            base_score = 50
+        else:  # 70% 이상 매칭
+            base_score = 65
+        
+        # 최종 점수: 기본 점수 + 키워드 매칭 비율(30%) + 제목 포함 여부(보너스) + 길이 감점
+        score = base_score + (match_ratio * 30) + title_match_bonus + length_penalty
+        return min(100, max(0, int(score)))  # 최소 점수 보장 제거
+    
+    # URL-content 일치도 계산
+    def calculate_url_content_match(row):
+        """URL과 content의 일치도 계산 (0-100) - 완화된 기준"""
+        url = str(row.get("url", "")).strip() if pd.notna(row.get("url")) else ""
+        content = str(row.get("content", "")).strip()
+        
+        if not url or not content:
+            return 60  # URL이 없어도 기본 점수 (완화)
+        
+        # URL에서 도메인과 경로 키워드 추출
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace("www.", "")
+            path = parsed.path
+            
+            # 도메인과 경로에서 키워드 추출
+            url_keywords = extract_keywords(domain + " " + path, min_length=2)
+            
+            # content에서 URL 키워드가 포함되는지 확인 (범위 확대)
+            content_keywords = extract_keywords(content[:1000], min_length=2)
+            matched = url_keywords & content_keywords
+            
+            # URL이 content에 직접 언급되는지 확인
+            url_mentioned = domain in content or url in content
+            
+            # 점수 계산 (완화된 기준)
+            if url_mentioned:
+                return 100
+            elif matched:
+                match_ratio = len(matched) / len(url_keywords) if url_keywords else 0
+                # 기본 점수 50점 + 매칭 비율에 따른 추가 점수
+                return min(100, int(50 + match_ratio * 50))
+            else:
+                # URL이 있고 content도 있으면 기본적으로 관련 있다고 가정 (완화)
+                return 50  # 관련성 낮아도 기본 점수
+        except:
+            return 60  # 파싱 실패 시 기본 점수 (완화)
+    
+    # summary-content 일치도 계산
+    def calculate_summary_content_match(row):
+        """summary와 content의 일치도 계산 (0-100) - 완화된 기준"""
+        summary = str(row.get("summary", "")).strip() if pd.notna(row.get("summary")) else ""
+        content = str(row.get("content", "")).strip()
+        
+        if not summary or not content:
+            return 60  # summary가 없어도 기본 점수 (완화)
+        
+        # summary의 키워드 추출
+        summary_keywords = extract_keywords(summary, min_length=2)
+        if not summary_keywords:
+            return 60  # 키워드가 없어도 기본 점수 (완화)
+        
+        # content의 키워드 추출 (앞부분 3000자로 확대)
+        content_preview = content[:3000]
+        content_keywords = extract_keywords(content_preview, min_length=2)
+        
+        # summary 키워드가 content에 포함된 비율
+        matched_keywords = summary_keywords & content_keywords
+        match_ratio = len(matched_keywords) / len(summary_keywords) if summary_keywords else 0
+        
+        # summary가 content의 앞부분과 유사한지 확인
+        content_start_keywords = extract_keywords(content[:1000], min_length=2)
+        start_match_ratio = len(summary_keywords & content_start_keywords) / len(summary_keywords) if summary_keywords else 0
+        
+        # 최소한 1개 이상 키워드가 매칭되면 기본 점수 부여 (완화)
+        base_score = 50 if len(matched_keywords) > 0 else 45
+        
+        # 최종 점수: 기본 점수 + 키워드 매칭 비율(40%) + 앞부분 일치(10%)
+        score = base_score + (match_ratio * 40) + (start_match_ratio * 10)
+        return min(100, max(45, int(score)))  # 최소 45점 보장
+    
+    # 각 뉴스에 대해 일치도 계산
+    valid_news["title_content_match"] = valid_news.apply(calculate_title_content_match, axis=1)
+    valid_news["url_content_match"] = valid_news.apply(calculate_url_content_match, axis=1)
+    valid_news["summary_content_match"] = valid_news.apply(calculate_summary_content_match, axis=1)
+    
+    # 종합 품질 점수 (가중 평균)
+    # 제목-content: 70% (가중치 크게), URL-content: 10%, summary-content: 20%
+    valid_news["quality_score"] = (
+        valid_news["title_content_match"] * 0.7 +
+        valid_news["url_content_match"] * 0.1 +
+        valid_news["summary_content_match"] * 0.2
+    ).round(1)
+    
+    # 품질 등급 분류 (제목-본문 일치도가 낮으면 등급 강등, 보통 카테고리 제거)
+    def get_quality_grade(row):
+        score = row["quality_score"]
+        title_match = row["title_content_match"]
+        
+        # 40점 이상이면 무난한 품질로 간주 (불량 제외)
+        if score >= 40:
+            # 제목-본문 일치도가 50점 미만이면 등급을 한 단계 낮춤
+            if title_match < 50:
+                if score >= 70:
+                    return "양호"  # 우수 → 양호
+                elif score >= 50:
+                    return "양호"  # 양호 유지
+                else:  # 40-50점
+                    return "양호"  # 무난한 품질로 양호 처리
+            
+            # 제목-본문 일치도가 50-60점이면 등급을 한 단계 낮춤
+            if title_match < 60:
+                if score >= 70:
+                    return "양호"  # 우수 → 양호
+                elif score >= 50:
+                    return "양호"  # 양호 유지
+                else:  # 40-50점
+                    return "양호"  # 무난한 품질로 양호 처리
+            
+            # 제목-본문 일치도가 정상이면 일반 기준 적용
+            if score >= 70:
+                return "우수"
+            elif score >= 50:
+                return "양호"
+            else:  # 40-50점
+                return "양호"  # 무난한 품질로 양호 처리
+        
+        # 40점 미만만 불량으로 분류
+        return "불량"
+    
+    valid_news["quality_grade"] = valid_news.apply(get_quality_grade, axis=1)
+    
+    # 통계 요약
+    total_count = len(valid_news)
+    avg_title_match = valid_news["title_content_match"].mean()
+    avg_url_match = valid_news["url_content_match"].mean()
+    avg_summary_match = valid_news["summary_content_match"].mean()
+    avg_quality_score = valid_news["quality_score"].mean()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("제목-content 일치도", f"{avg_title_match:.1f}점")
+        st.caption("가중치: 70%")
+    with col2:
+        st.metric("URL-content 일치도", f"{avg_url_match:.1f}점")
+        st.caption("가중치: 10%")
+    with col3:
+        st.metric("summary-content 일치도", f"{avg_summary_match:.1f}점")
+        st.caption("가중치: 20%")
+    with col4:
+        st.metric("종합 품질 점수", f"{avg_quality_score:.1f}점")
+    
+    # 품질 등급별 기술통계
+    st.markdown("##### 📊 품질 등급별 점수 기술통계")
+    
+    grade_stats_list = []
+    for grade in ["우수", "양호", "불량"]:
+        grade_data = valid_news[valid_news["quality_grade"] == grade]
+        if not grade_data.empty:
+            stats = {
+                "등급": grade,
+                "개수": len(grade_data),
+                "평균": grade_data["quality_score"].mean(),
+                "표준편차": grade_data["quality_score"].std(),
+                "최소값": grade_data["quality_score"].min(),
+                "최대값": grade_data["quality_score"].max(),
+                "중간값": grade_data["quality_score"].median()
+            }
+            grade_stats_list.append(stats)
+    
+    if grade_stats_list:
+        grade_stats_df = pd.DataFrame(grade_stats_list)
+        # 소수점 2자리로 반올림
+        grade_stats_df["평균"] = grade_stats_df["평균"].round(2)
+        grade_stats_df["표준편차"] = grade_stats_df["표준편차"].round(2)
+        grade_stats_df["최소값"] = grade_stats_df["최소값"].round(2)
+        grade_stats_df["최대값"] = grade_stats_df["최대값"].round(2)
+        grade_stats_df["중간값"] = grade_stats_df["중간값"].round(2)
+        
+        # 표준편차가 NaN인 경우 0으로 처리
+        grade_stats_df["표준편차"] = grade_stats_df["표준편차"].fillna(0)
+        
+        st.dataframe(grade_stats_df, use_container_width=True, height=200)
+    
+    # 품질 등급 분포 (보통 제거)
+    grade_counts = valid_news["quality_grade"].value_counts()
+    grade_order = ["우수", "양호", "불량"]
+    grade_counts = grade_counts.reindex(grade_order, fill_value=0)
+    
+    if px is not None and len(grade_counts) > 0:
+        grade_df = pd.DataFrame({
+            "등급": grade_counts.index,
+            "건수": grade_counts.values
+        })
+        fig = px.pie(
+            grade_df,
+            values="건수",
+            names="등급",
+            title="데이터 품질 등급 분포",
+            color="등급",
+            color_discrete_map={"우수": "#10b981", "양호": "#3b82f6", "불량": "#ef4444"}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # 품질 점수 분포 히스토그램
+    if px is not None:
+        fig = px.histogram(
+            valid_news,
+            x="quality_score",
+            nbins=20,
+            title="종합 품질 점수 분포",
+            labels={"quality_score": "품질 점수", "count": "뉴스 수"},
+            color_discrete_sequence=["#3b82f6"]
+        )
+        fig.add_vline(x=avg_quality_score, line_dash="dash", line_color="red", 
+                     annotation_text=f"평균: {avg_quality_score:.1f}점")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # 불량 데이터 상세 목록 (불량 등급만 필터링)
+    st.markdown("#### ⚠️ 불량 뉴스 (전체 목록)")
+    
+    # 불량 등급인 뉴스만 필터링
+    bad_quality_news = valid_news[valid_news["quality_grade"] == "불량"].copy()
+    
+    if bad_quality_news.empty:
+        st.info("✅ 불량 등급인 뉴스가 없습니다.")
+    else:
+        # news_id 컬럼이 있으면 포함, 없으면 display_id 사용
+        display_columns = []
+        if "news_id" in bad_quality_news.columns:
+            display_columns.append("news_id")
+        elif "display_id" in bad_quality_news.columns:
+            display_columns.append("display_id")
+        
+        display_columns.extend(["title", "url", "content", "quality_score", "title_content_match", 
+                               "url_content_match", "summary_content_match", "quality_grade"])
+        
+        # 존재하는 컬럼만 선택
+        available_columns = [col for col in display_columns if col in bad_quality_news.columns]
+        # 품질 점수 낮은 순으로 정렬
+        bad_quality = bad_quality_news.nsmallest(len(bad_quality_news), "quality_score")[available_columns].copy()
+        
+        # 불량 뉴스 개수 표시
+        st.markdown(f"**총 {len(bad_quality):,}건의 불량 뉴스가 발견되었습니다.**")
+        
+        # 불량 뉴스의 뉴스처(언론사) 비율 파이그래프
+        if "source" in bad_quality_news.columns:
+            source_counts = bad_quality_news["source"].value_counts()
+            if len(source_counts) > 0:
+                st.markdown("##### 📊 불량 뉴스 뉴스처(언론사) 비율")
+                
+                # 뉴스처별 개수와 비율 계산
+                source_df = pd.DataFrame({
+                    "뉴스처": source_counts.index,
+                    "건수": source_counts.values
+                })
+                source_df["비율 (%)"] = (source_df["건수"] / len(bad_quality_news) * 100).round(1)
+                
+                # 파이그래프 생성
+                if px is not None:
+                    fig_source = px.pie(
+                        source_df,
+                        values="건수",
+                        names="뉴스처",
+                        title="불량 뉴스 뉴스처(언론사) 비율",
+                        hover_data=["비율 (%)"]
+                    )
+                    fig_source.update_layout(
+                        height=400,
+                        showlegend=True
+                    )
+                    st.plotly_chart(fig_source, use_container_width=True)
+    
+        # 컬럼명 한글화
+        column_mapping = {
+            "news_id": "뉴스 ID",
+            "display_id": "뉴스 ID",
+            "title": "제목",
+            "url": "URL",
+            "content": "본문 내용",
+            "quality_score": "종합 점수",
+            "title_content_match": "제목-본문 일치도",
+            "url_content_match": "URL-본문 일치도",
+            "summary_content_match": "요약-본문 일치도",
+            "quality_grade": "등급"
+        }
+        bad_quality.columns = [column_mapping.get(col, col) for col in bad_quality.columns]
+        
+        # 제목, URL, 본문 내용 길이 제한 (표시용)
+        if "제목" in bad_quality.columns:
+            bad_quality["제목"] = bad_quality["제목"].apply(lambda x: str(x)[:50] + "..." if len(str(x)) > 50 else str(x))
+        if "URL" in bad_quality.columns:
+            bad_quality["URL"] = bad_quality["URL"].apply(lambda x: str(x)[:50] + "..." if len(str(x)) > 50 else str(x))
+        if "본문 내용" in bad_quality.columns:
+            # 본문 내용은 200자로 제한 (더 길게 표시)
+            bad_quality["본문 내용"] = bad_quality["본문 내용"].apply(
+                lambda x: str(x)[:200] + "..." if len(str(x)) > 200 else str(x) if pd.notna(x) and str(x).strip() else "(내용 없음)"
+            )
+        
+        st.dataframe(bad_quality, use_container_width=True, height=600)
+    
+    # 각 일치도별 상세 분석
+    st.markdown("#### 📊 일치도별 상세 분석")
+    
+    tab1, tab2, tab3 = st.tabs(["제목-본문 일치도", "URL-본문 일치도", "요약-본문 일치도"])
+    
+    # ID 컬럼 선택 (news_id 또는 display_id)
+    id_col = "news_id" if "news_id" in valid_news.columns else "display_id"
+    
+    with tab1:
+        st.markdown("**제목과 본문의 일치 여부**: 제목의 핵심 키워드가 본문에 포함되는지 확인 (가중치: 70%)")
+        title_mismatch = valid_news[valid_news["title_content_match"] < 50].nsmallest(10, "title_content_match")
+        if not title_mismatch.empty:
+            mismatch_df = title_mismatch[[id_col, "title", "title_content_match"]].copy()
+            mismatch_df.columns = ["뉴스 ID", "제목", "일치도"]
+            mismatch_df["제목"] = mismatch_df["제목"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
+            st.dataframe(mismatch_df, use_container_width=True)
+        else:
+            st.info("제목-본문 불일치가 심한 뉴스가 없습니다.")
+    
+    with tab2:
+        st.markdown("**URL과 본문의 일치 여부**: URL 도메인/경로와 본문 내용의 관련성 확인 (가중치: 10%)")
+        url_mismatch = valid_news[valid_news["url_content_match"] < 50].nsmallest(10, "url_content_match")
+        if not url_mismatch.empty:
+            mismatch_df = url_mismatch[[id_col, "url", "url_content_match"]].copy()
+            mismatch_df.columns = ["뉴스 ID", "URL", "일치도"]
+            mismatch_df["URL"] = mismatch_df["URL"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
+            st.dataframe(mismatch_df, use_container_width=True)
+        else:
+            st.info("URL-본문 불일치가 심한 뉴스가 없습니다.")
+    
+    with tab3:
+        st.markdown("**요약과 본문의 일치 여부**: 요약이 본문을 정확히 요약하는지 확인 (가중치: 20%)")
+        summary_mismatch = valid_news[valid_news["summary_content_match"] < 50].nsmallest(10, "summary_content_match")
+        if not summary_mismatch.empty:
+            mismatch_df = summary_mismatch[[id_col, "summary", "summary_content_match"]].copy()
+            mismatch_df.columns = ["뉴스 ID", "요약", "일치도"]
+            mismatch_df["요약"] = mismatch_df["요약"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
+            st.dataframe(mismatch_df, use_container_width=True)
+        else:
+            st.info("요약-본문 불일치가 심한 뉴스가 없습니다.")
 
 def _render_impact_score_distribution(news_df: pd.DataFrame):
     """임팩트 점수 분포"""
@@ -2175,8 +2787,22 @@ def _render_search_result_news_popularity(df_view: pd.DataFrame):
     
     for idx, row in search_events.iterrows():
         payload = _parse_payload(row.get("payload"))
-        if payload and "article_ids" in payload:
-            article_ids = payload.get("article_ids", [])
+        # article_ids 외에 다른 필드명도 확인 (supabase_results 등)
+        article_ids = []
+        if payload:
+            # 여러 가능한 필드명 확인
+            if "article_ids" in payload:
+                article_ids = payload.get("article_ids", [])
+            elif "supabase_results" in payload:
+                # supabase_results가 리스트인 경우
+                results = payload.get("supabase_results", [])
+                if isinstance(results, list):
+                    article_ids = [item.get("id") or item.get("news_id") for item in results if item]
+            elif "results" in payload:
+                results = payload.get("results", [])
+                if isinstance(results, list):
+                    article_ids = [item.get("id") or item.get("news_id") for item in results if item]
+            
             keyword = payload.get("keyword", "")
             
             for news_id in article_ids:
@@ -2247,20 +2873,29 @@ def _render_search_result_news_popularity(df_view: pd.DataFrame):
             # 에러가 발생해도 계속 진행 (payload에서 가져온 제목만 사용)
     
     # 인기 뉴스 분석 데이터 생성
-    if news_appearances:
+    # 클릭된 뉴스도 포함 (검색 결과에 포함되지 않았더라도)
+    all_news_ids_for_analysis = set(news_appearances.keys()) | set(news_clicks.keys())
+    
+    if all_news_ids_for_analysis:
         popularity_data = []
-        for news_id, data in news_appearances.items():
-            appearance_count = data["count"]
+        for news_id in all_news_ids_for_analysis:
+            appearance_count = news_appearances.get(news_id, {}).get("count", 0)
             click_count = news_clicks.get(news_id, 0)
-            click_rate = (click_count / appearance_count * 100) if appearance_count > 0 else 0
+            # appearance_count가 0이면 클릭률 계산 불가 (N/A 또는 0으로 표시)
+            # 실제로는 검색 결과에 포함되지 않았지만 클릭된 경우일 수 있음
+            if appearance_count > 0:
+                click_rate = (click_count / appearance_count * 100)
+            else:
+                # 검색 결과에 포함되지 않았지만 클릭된 경우
+                click_rate = 0  # 또는 N/A로 표시할 수도 있음
             title = news_titles.get(news_id, f"뉴스 ID: {news_id}")
             
             popularity_data.append({
                 "news_id": news_id,
                 "제목": title[:50] + "..." if len(title) > 50 else title,
-                "검색 결과 포함": appearance_count,
+                "검색 결과 포함": appearance_count if appearance_count > 0 else 0,
                 "클릭 수": click_count,
-                "클릭률 (%)": round(click_rate, 1)
+                "클릭률 (%)": round(click_rate, 1) if appearance_count > 0 else 0.0
             })
         
         if popularity_data:
@@ -2290,11 +2925,19 @@ def _render_search_result_news_popularity(df_view: pd.DataFrame):
                     orientation='h',
                     title="검색 결과에서 가장 많이 클릭된 뉴스 Top 10",
                     labels={"클릭 수": "클릭 수", "제목": "뉴스 제목"},
-                    hover_data=["검색 결과 포함", "클릭률 (%)"]
+                    hover_data=["검색 결과 포함", "클릭률 (%)"],
+                    text="클릭 수"  # 막대 옆에 숫자 표시
+                )
+                fig.update_traces(texttemplate='%{text}건', textposition='outside')
+                fig.update_layout(
+                    height=500,
+                    showlegend=False
                 )
                 st.plotly_chart(fig, use_container_width=True)
             
-            st.dataframe(popularity_df, use_container_width=True, height=400)
+            # 전체 데이터는 expander로 숨김 처리 (필요시 펼쳐서 확인 가능)
+            with st.expander("📋 전체 뉴스 클릭 데이터 보기", expanded=False):
+                st.dataframe(popularity_df, use_container_width=True, height=400)
     else:
         st.info("📊 검색 결과 데이터가 없습니다.")
 
@@ -2308,21 +2951,54 @@ def _render_url_parsing_quality_for_content(df_view: pd.DataFrame):
     
     st.markdown("#### 📰 URL 파싱 품질 (크롤링/파싱 실패율)")
     
-    success_count = int((url_events["event_name"] == "news_url_added_from_chat").sum())
-    error_count = int((url_events["event_name"] == "news_url_add_error").sum())
+    # 이벤트 건수 (중복 포함)
+    success_events = url_events[url_events["event_name"] == "news_url_added_from_chat"]
+    error_events = url_events[url_events["event_name"] == "news_url_add_error"]
+    success_count = len(success_events)
+    error_count = len(error_events)
     total_count = success_count + error_count
+    
+    # 고유 URL 기준으로 카운트 (중복 제거) - payload에서 URL 추출 시도
+    unique_urls_success = set()
+    unique_urls_error = set()
+    
+    for idx, row in success_events.iterrows():
+        payload = _parse_payload(row.get("payload"))
+        if payload:
+            url = payload.get("url") or payload.get("link") or payload.get("news_url")
+            if url:
+                unique_urls_success.add(str(url).strip())
+    
+    for idx, row in error_events.iterrows():
+        payload = _parse_payload(row.get("payload"))
+        if payload:
+            url = payload.get("url") or payload.get("link") or payload.get("news_url") or payload.get("error_url")
+            if url:
+                unique_urls_error.add(str(url).strip())
+    
+    unique_success_count = len(unique_urls_success) if unique_urls_success else success_count
+    unique_error_count = len(unique_urls_error) if unique_urls_error else error_count
+    unique_total_count = unique_success_count + unique_error_count
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("파싱 성공", success_count)
+        st.metric("파싱 성공", f"{unique_success_count:,}건")
+        if success_count > unique_success_count:
+            st.caption(f"이벤트 건수: {success_count:,}건")
     with col2:
-        st.metric("파싱 실패", error_count)
+        st.metric("파싱 실패", f"{unique_error_count:,}건")
+        if error_count > unique_error_count:
+            st.caption(f"이벤트 건수: {error_count:,}건")
     with col3:
-        if total_count > 0:
-            failure_rate = (error_count / total_count) * 100
+        if unique_total_count > 0:
+            failure_rate = (unique_error_count / unique_total_count) * 100
             st.metric("실패율", f"{failure_rate:.1f}%")
         else:
             st.metric("실패율", "N/A")
+    
+    # 참고 정보 표시
+    if total_count > unique_total_count:
+        st.info(f"💡 **참고**: 고유 URL {unique_total_count:,}개에 대해 총 {total_count:,}개의 파싱 이벤트가 발생했습니다. (같은 URL을 여러 번 파싱한 경우 포함)")
     
     # 시간대별 실패율 추이
     if total_count > 0:
@@ -3498,85 +4174,7 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     
     st.markdown("---")
     
-    # ========== D. 검색 결과 뉴스 인기 분석 ==========
-    st.markdown("#### 🔍 검색 결과 뉴스 인기 분석")
-    
-    # 검색 결과에 포함된 뉴스와 실제 클릭된 뉴스 분석
-    search_events = df_view[df_view["event_name"] == "news_search_from_chat"].copy()
-    selected_events = df_view[df_view["event_name"] == "news_selected_from_chat"].copy()
-    
-    if len(search_events) > 0:
-        # 검색 결과에 포함된 뉴스 ID 수집
-        news_appearances = {}  # {news_id: {count: int, keywords: set}}
-        
-        for idx, row in search_events.iterrows():
-            payload = _parse_payload(row.get("payload"))
-            if payload and "article_ids" in payload:
-                article_ids = payload.get("article_ids", [])
-                keyword = payload.get("keyword", "")
-                
-                for news_id in article_ids:
-                    if news_id:
-                        news_id_str = str(news_id)
-                        if news_id_str not in news_appearances:
-                            news_appearances[news_id_str] = {"count": 0, "keywords": set()}
-                        news_appearances[news_id_str]["count"] += 1
-                        if keyword:
-                            news_appearances[news_id_str]["keywords"].add(keyword)
-        
-        # 실제 클릭된 뉴스 ID 수집
-        news_clicks = {}  # {news_id: count}
-        news_titles = {}  # {news_id: title}
-        
-        for idx, row in selected_events.iterrows():
-            news_id = row.get("news_id")
-            if news_id:
-                news_id_str = str(news_id)
-                news_clicks[news_id_str] = news_clicks.get(news_id_str, 0) + 1
-                
-                # 제목 정보 수집
-                payload = _parse_payload(row.get("payload"))
-                if payload and "title" in payload and news_id_str not in news_titles:
-                    news_titles[news_id_str] = payload.get("title", "")
-        
-        # 인기 뉴스 분석 데이터 생성
-        if news_appearances:
-            popularity_data = []
-            for news_id, data in news_appearances.items():
-                appearance_count = data["count"]
-                click_count = news_clicks.get(news_id, 0)
-                click_rate = (click_count / appearance_count * 100) if appearance_count > 0 else 0
-                title = news_titles.get(news_id, f"뉴스 ID: {news_id}")
-                
-                popularity_data.append({
-                    "news_id": news_id,
-                    "제목": title[:50] + "..." if len(title) > 50 else title,
-                    "검색 결과 포함": appearance_count,
-                    "클릭 수": click_count,
-                    "클릭률 (%)": round(click_rate, 1)
-                })
-            
-            if popularity_data:
-                popularity_df = pd.DataFrame(popularity_data)
-                popularity_df = popularity_df.sort_values("클릭 수", ascending=False).head(10)
-                
-                if px is not None and len(popularity_df) > 0:
-                    fig_pop = px.bar(
-                        popularity_df,
-                        x="클릭 수",
-                        y="제목",
-                        orientation='h',
-                        title="검색 결과에서 가장 많이 클릭된 뉴스 Top 10",
-                        labels={"클릭 수": "클릭 수", "제목": "뉴스 제목"},
-                        hover_data=["검색 결과 포함", "클릭률 (%)"]
-                    )
-                    st.plotly_chart(fig_pop, use_container_width=True)
-                
-                st.dataframe(popularity_df, use_container_width=True, height=300)
-    
-    st.markdown("---")
-    
-    # ========== E. 용어별 인기 분석 (Bar Chart) ==========
+    # ========== D. 용어별 인기 분석 (Bar Chart) ==========
     st.markdown("#### 📊 용어별 인기 분석")
     
     glossary_clicks = df_view[df_view["event_name"] == "glossary_click"].copy()
