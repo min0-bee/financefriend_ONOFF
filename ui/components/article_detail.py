@@ -27,6 +27,46 @@ def render():
         # ✅ 성능 측정: 하이라이트 처리 시간
         article_id = article.get("id")
         content = article['content']
+        
+        # 컨텐츠에 문단 구분이 없으면 자동으로 문단 생성
+        if content:
+            import re
+            # 이미 문단 구분이 있는지 확인 (줄바꿈 2개 이상)
+            if '\n\n' not in content and content.count('\n') < len(content) / 200:
+                # 문장 단위로 나누기 (마침표, 물음표, 느낌표 기준)
+                # 한글 마침표(.), 영문 마침표(.), 물음표(?), 느낌표(!) 후 공백이 오면 문장 끝으로 간주
+                sentences = re.split(r'([.!?。！？]\s+)', content)
+                
+                # 문장들을 재조합하면서 문단 생성 (3-4문장마다 문단 구분)
+                formatted_paragraphs = []
+                current_paragraph = []
+                sentence_count = 0
+                
+                for i in range(0, len(sentences), 2):
+                    if i + 1 < len(sentences):
+                        sentence = sentences[i] + sentences[i + 1]
+                    else:
+                        sentence = sentences[i]
+                    
+                    if sentence.strip():
+                        current_paragraph.append(sentence.strip())
+                        sentence_count += 1
+                        
+                        # 3-4문장마다 또는 문장이 길면(150자 이상) 문단 구분
+                        if sentence_count >= 3 or len(' '.join(current_paragraph)) > 150:
+                            if current_paragraph:
+                                formatted_paragraphs.append(' '.join(current_paragraph))
+                                current_paragraph = []
+                                sentence_count = 0
+                
+                # 남은 문장들 처리
+                if current_paragraph:
+                    formatted_paragraphs.append(' '.join(current_paragraph))
+                
+                # 문단 구분자로 합치기
+                if formatted_paragraphs:
+                    content = '\n\n'.join(formatted_paragraphs)
+        
         highlight_start = time.time()
         # ✅ 성능 개선: 하이라이트 처리에서 발견된 용어도 함께 받아서 재사용
         result = highlight_terms(content, article_id=str(article_id) if article_id else None, return_matched_terms=True)

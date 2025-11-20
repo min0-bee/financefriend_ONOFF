@@ -2,46 +2,13 @@
 import re
 import time
 import textwrap
-import os
-import base64
 import streamlit as st
 from streamlit.components.v1 import html as st_html
 from core.logger import log_event
 from rag.glossary import explain_term, search_terms_by_rag
 from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request, search_related_article
 from data.news import parse_news_from_url, search_news_from_supabase
-from persona.persona import albwoong_persona_reply, generate_structured_persona_reply
-
-
-def get_albwoong_avatar_base64():
-    """알부엉 이미지를 Base64로 인코딩하여 반환"""
-    possible_paths = [
-        "assets/albwoong.png",
-        "assets/albueong.png",
-        "assets/albuong.png",
-        "assets/albwoong.jpg",
-        "assets/albwoong.svg",
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            try:
-                with open(path, "rb") as img_file:
-                    encoded = base64.b64encode(img_file.read()).decode()
-                    ext = path.split(".")[-1].lower()
-                    if ext == "svg":
-                        mime_type = "image/svg+xml"
-                    elif ext == "png":
-                        mime_type = "image/png"
-                    elif ext == "jpg" or ext == "jpeg":
-                        mime_type = "image/jpeg"
-                    else:
-                        mime_type = "image/png"
-                    return f"data:{mime_type};base64,{encoded}"
-            except Exception:
-                continue
-    
-    return ""
+from persona.persona import albwoong_persona_reply
 
 
 # 일반 질문에 대한 LLM 응답
@@ -77,21 +44,7 @@ ALBWOONG_OPENERS = [
     "모르는 걸 물어보는 게 진짜 지혜야. 시작해볼까?"
 ]
 
-def render(terms: dict[str, dict], use_openai: bool = False):
-    """
-    챗봇 패널 렌더링
-    
-    Args:
-        terms: 금융 용어 사전 (dict[str, dict])
-        use_openai: OpenAI 사용 여부 (기본값: False)
-    
-    Features:
-        - 플로팅 챗봇 UI (우측 하단 고정, 400px × 600px)
-        - 자동 스크롤 기능
-        - RAG 기반 응답 생성
-        - 질문 유형 자동 판단
-        - 구조화된 답변 형식
-    """
+def render(terms: dict[str, dict], use_openai: bool=False):
     st.markdown("### 💬 금융 용어 도우미")
     st.markdown("---")
 
@@ -114,7 +67,8 @@ def render(terms: dict[str, dict], use_openai: bool = False):
 
     # 대화 히스토리 렌더(기존 그대로)
     messages_html = []
-    article_buttons = []  # 기사 버튼을 별도로 저장
+    article_buttons = []  # 기사 버튼들을 별도로 저장
+    
     for idx, message in enumerate(st.session_state.chat_history):
         role = message["role"]
         role_class = "user" if role == "user" else "assistant"
@@ -127,11 +81,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
         )
         avatar_html = ""
         if role_class == "assistant":
-            avatar_img_src = get_albwoong_avatar_base64()
-            if avatar_img_src:
-                avatar_html = f'''<div class="chat-avatar chat-avatar--assistant"><img src="{avatar_img_src}" alt="알부엉" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;"></div>'''
-            else:
-                avatar_html = '<div class="chat-avatar chat-avatar--assistant"></div>'
+            avatar_html = '<div class="chat-avatar chat-avatar--assistant"></div>'
 
         messages_html.append(
             textwrap.dedent(
@@ -152,13 +102,13 @@ def render(terms: dict[str, dict], use_openai: bool = False):
 
     chat_html = (
         "<div id='chat-scroll-box' class='chat-message-container' "
-        "style='overflow-y:auto; padding-right:8px; flex: 1; min-height: 0;'>"
+        "style='max-height:400px; overflow-y:auto; padding-right:8px;'>"
         + "".join(messages_html)
         + "<div id='chat-scroll-anchor'></div></div>"
     )
     st.markdown(chat_html, unsafe_allow_html=True)
     
-    # 기사 버튼 표시 (가장 최근 검색 결과만 표시)
+    # 기사 버튼들 표시 (가장 최근 검색 결과만 표시)
     if article_buttons:
         # 가장 최근 메시지의 기사 버튼만 표시
         msg_idx, articles = article_buttons[-1]
@@ -171,222 +121,43 @@ def render(terms: dict[str, dict], use_openai: bool = False):
             
             if st.button(
                 f"📄 {article_title[:50]}{'...' if len(article_title) > 50 else ''}",
-                key=f"article_btn_{article_id}_{msg_idx}",
+                key=f"article_btn_{msg_idx}_{article_id}",
                 use_container_width=True
             ):
+                # 기사 선택 및 상세 화면으로 이동
                 st.session_state.selected_article = article
+                st.session_state.detail_enter_logged = False
+                
+                # 검색 키워드 정보 추출 (해당 메시지에서)
+                search_keyword = None
+                if msg_idx < len(st.session_state.chat_history):
+                    message = st.session_state.chat_history[msg_idx]
+                    search_keyword = message.get("search_keyword")
+                
+                # 로그 기록
+                log_event(
+                    "news_selected_from_chat",
+                    news_id=article_id,
+                    surface="sidebar",
+                    payload={
+                        "title": article_title,
+                        "source": "chat_button",
+                        "search_keyword": search_keyword,  # 검색 키워드 정보
+                        "url": article.get("url"),  # 기사 URL
+                        "article_date": article.get("date")  # 기사 날짜
+                    }
+                )
+                
                 st.rerun()
-    
     st_html(
         """
         <script>
-        (function() {
-            // 챗봇 컨테이너 높이를 사이드바에 맞게 조정
-            function adjustChatHeight() {
-                const chatBox = window.parent.document.getElementById('chat-scroll-box');
-                if (!chatBox) return;
-                
-                // 뷰포트 높이 계산
-                const vh = window.parent.innerHeight;
-                
-                // 제목 영역 높이 측정 (실제 DOM에서)
-                let titleHeight = 0;
-                const chatPanel = chatBox.closest('[data-testid="column"]') || chatBox.parentElement;
-                if (chatPanel) {
-                    // 제목과 구분선 찾기
-                    const titleElements = chatPanel.querySelectorAll('h3, hr');
-                    titleElements.forEach(el => {
-                        if (el !== chatBox && !chatBox.contains(el)) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.height > 0) {
-                                titleHeight += rect.height + 10; // 마진 포함
-                            }
-                        }
-                    });
-                }
-                if (titleHeight === 0) titleHeight = 100; // 기본값
-                
-                // 입력창 영역 높이 측정 (실제 DOM에서)
-                let inputHeight = 120; // 기본값
-                const chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
-                if (chatInput) {
-                    const inputRect = chatInput.getBoundingClientRect();
-                    inputHeight = inputRect.height + 40; // 입력창 높이 + 여유공간
-                }
-                
-                // 초기화 버튼 높이 고려
-                const resetButton = window.parent.document.querySelector('button');
-                if (resetButton && resetButton.textContent.includes('초기화')) {
-                    const buttonRect = resetButton.getBoundingClientRect();
-                    inputHeight += buttonRect.height + 10;
-                }
-                
-                // 플로팅 챗봇 높이에 맞게 계산 (600px 전체 높이에서 제목과 입력창 높이를 뺀 값)
-                const totalHeight = 600; // 플로팅 챗봇 전체 높이
-                const calculatedHeight = totalHeight - titleHeight - inputHeight - 20; // 20px 여유공간
-                
-                // 최소 높이 보장
-                const finalHeight = Math.max(300, calculatedHeight);
-                chatBox.style.height = finalHeight + 'px';
-                chatBox.style.maxHeight = finalHeight + 'px';
-                chatBox.style.overflowY = 'auto';
-                chatBox.style.padding = '10px';
-            }
-            
-            // 자동 스크롤을 맨 아래로 (챗봇 내부 스크롤만, 페이지 스크롤은 영향 없음)
-            function scrollToBottom(smooth = true) {
-                const chatBox = window.parent.document.getElementById('chat-scroll-box');
-                if (chatBox) {
-                    // 부드러운 스크롤 애니메이션 사용 (느린 속도)
-                    if (smooth) {
-                        const targetScroll = chatBox.scrollHeight;
-                        const startScroll = chatBox.scrollTop;
-                        const distance = targetScroll - startScroll;
-                        const duration = 400; // 애니메이션 지속 시간 (ms) - 더 느리게
-                        const startTime = performance.now();
-                        
-                        function animateScroll(currentTime) {
-                            const elapsed = currentTime - startTime;
-                            const progress = Math.min(elapsed / duration, 1);
-                            
-                            // easeOutCubic 함수로 부드러운 감속
-                            const easeOutCubic = 1 - Math.pow(1 - progress, 3);
-                            const currentScroll = startScroll + (distance * easeOutCubic);
-                            
-                            chatBox.scrollTop = currentScroll;
-                            
-                            if (progress < 1) {
-                                requestAnimationFrame(animateScroll);
-                            } else {
-                                // 애니메이션 완료 후 정확한 위치로 이동
-                                chatBox.scrollTop = targetScroll;
-                            }
-                        }
-                        
-                        requestAnimationFrame(animateScroll);
-                    } else {
-                        // 즉시 스크롤 (초기 로드 시)
-                        chatBox.scrollTop = chatBox.scrollHeight;
-                    }
-                }
-            }
-            
-            // 챗봇 패널 컬럼 설정 (오른쪽 사이드바 형태로 고정)
-            function setupChatPanelLayout() {
-                const chatBox = window.parent.document.getElementById('chat-scroll-box');
-                if (!chatBox) return;
-                
-                // 챗봇 패널의 컬럼 찾기
-                let chatColumn = chatBox.closest('[data-testid="column"]');
-                
-                // Streamlit 구조에 따라 여러 단계로 찾기
-                if (!chatColumn) {
-                    let parent = chatBox.parentElement;
-                    let depth = 0;
-                    while (parent && depth < 10) {
-                        if (parent.hasAttribute && parent.hasAttribute('data-testid')) {
-                            const testId = parent.getAttribute('data-testid');
-                            if (testId === 'column') {
-                                chatColumn = parent;
-                                break;
-                            }
-                        }
-                        parent = parent.parentElement;
-                        depth++;
-                    }
-                }
-                
-                if (chatColumn) {
-                    // 우측 하단 플로팅 챗봇 형태로 고정 (position: fixed 사용)
-                    chatColumn.style.position = 'fixed'; // 요소를 뷰포트에 고정
-                    chatColumn.style.bottom = '20px';     // 화면 하단에서 20px 위로
-                    chatColumn.style.right = '20px';      // 화면 오른쪽에서 20px 왼쪽으로
-                    chatColumn.style.zIndex = '1000';     // 다른 요소들 위에 표시되도록 설정
-                    chatColumn.style.width = '400px';
-                    chatColumn.style.height = '600px';
-                    chatColumn.style.background = '#ffffff';
-                    chatColumn.style.borderRadius = '10px';
-                    chatColumn.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
-                    chatColumn.style.display = 'flex';
-                    chatColumn.style.flexDirection = 'column';
-                    chatColumn.style.padding = '0';
-                    chatColumn.style.boxSizing = 'border-box';
-                    chatColumn.style.overflow = 'hidden';
-                }
-            }
-            
-            // 초기 조정 및 스크롤
+        const anchor = window.parent.document.getElementById('chat-scroll-anchor');
+        if (anchor) {
             setTimeout(() => {
-                setupChatPanelLayout();
-                adjustChatHeight();
-                scrollToBottom();
-            }, 100);
-            
-            // 윈도우 리사이즈 시 재조정
-            window.parent.addEventListener('resize', () => {
-                setTimeout(() => {
-                    setupChatPanelLayout();
-                    adjustChatHeight();
-                }, 100);
-            });
-            
-            // 사이드바는 고정이므로 스크롤 이벤트는 필요 없음
-            
-            // 새 메시지가 추가되거나 텍스트가 변경될 때마다 자동 스크롤 (MutationObserver 사용)
-            const chatBox = window.parent.document.getElementById('chat-scroll-box');
-            if (chatBox) {
-                let scrollTimeout = null;
-                const observer = new MutationObserver((mutations) => {
-                    // 내용이 변경되었을 때만 스크롤
-                    let shouldScroll = false;
-                    mutations.forEach(mutation => {
-                        // 새 노드가 추가되거나 텍스트 내용이 변경된 경우
-                        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                            shouldScroll = true;
-                        } else if (mutation.type === 'characterData') {
-                            // 텍스트가 실시간으로 추가되는 경우 (스트리밍 응답)
-                            shouldScroll = true;
-                        }
-                    });
-                    if (shouldScroll) {
-                        // 디바운싱: 연속된 변경을 하나로 묶어서 스크롤 (성능 최적화)
-                        if (scrollTimeout) {
-                            clearTimeout(scrollTimeout);
-                        }
-                        scrollTimeout = setTimeout(() => {
-                            scrollToBottom(true); // 부드러운 스크롤 애니메이션 (느린 속도)
-                        }, 50); // 50ms 지연으로 더 부드러운 스크롤
-                    }
-                });
-                
-                observer.observe(chatBox, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true,
-                    characterDataOldValue: true // 텍스트 변경 추적
-                });
-            }
-            
-            // 페이지 로드 후 주기적으로 스크롤 확인 (새 메시지 추가 대응)
-            // 스트리밍 응답 시 실시간 스크롤을 위해 간격을 더 짧게 설정
-            let lastScrollHeight = 0;
-            function checkAndScroll() {
-                const chatBox = window.parent.document.getElementById('chat-scroll-box');
-                if (chatBox) {
-                    const currentScrollHeight = chatBox.scrollHeight;
-                    if (currentScrollHeight !== lastScrollHeight) {
-                        lastScrollHeight = currentScrollHeight;
-                        scrollToBottom(true); // 부드러운 스크롤 애니메이션
-                    }
-                }
-            }
-            
-            // 주기적으로 확인 (스트리밍 응답 대응을 위해 간격을 150ms로 설정)
-            setInterval(checkAndScroll, 150);
-            
-            // 초기 스크롤 (즉시 스크롤, 애니메이션 없음)
-            setTimeout(() => scrollToBottom(false), 200);
-        })();
+                anchor.scrollIntoView({behavior: "smooth", block: "end"});
+            }, 50);
+        }
         </script>
         """,
         height=0,
@@ -400,25 +171,20 @@ def render(terms: dict[str, dict], use_openai: bool = False):
         log_event("chat_question", message=user_input, source="chat", surface="sidebar")
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        explanation = None
-        matched_term = None
-        is_financial_question = False  # 금융 용어 질문인지 판단
-        api_info = None  # OpenAI API 정보 (초기화)
-
-        # 0) URL 감지 및 처리 (최우선)
+        # 🔗 URL 감지 및 처리 (최우선)
         urls = extract_urls_from_text(user_input)
         if urls:
             # 첫 번째 URL 사용
             url = urls[0]
-            with st.spinner("오늘의 경제 뉴스를 가져오는 중..."):
+            with st.spinner("🔄 뉴스 기사를 가져오는 중..."):
                 try:
                     article = parse_news_from_url(url)
                     
                     if article:
                         # 성공 메시지와 함께 버튼 표시
-                        explanation = "✅ 요청한 기사를 불러왔어. 아래 버튼을 클릭해줘! 📰"
+                        explanation = f"✅ 요청한 뉴스를 불러왔어. 아래 버튼을 클릭해줘! 🦉"
                         
-                        # 채팅 메시지에 기사 저장 (버튼 표시용)
+                        # 챗 히스토리에 메시지와 기사 저장 (버튼 표시용)
                         st.session_state.chat_history.append({
                             "role": "assistant",
                             "content": explanation,
@@ -429,43 +195,60 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                         log_event(
                             "news_url_added_from_chat",
                             news_id=article.get("id"),
-                            source="chat",
                             surface="sidebar",
-                            message=user_input,
-                            url=url
+                            message=user_input,  # 사용자 입력 메시지 (URL 포함)
+                            payload={
+                                "url": url,
+                                "title": article.get("title"),
+                                "source": "chat",
+                                "url_parsed": True
+                            }
                         )
                         
-                        # 세션 상태에 선택된 기사 저장
-                        st.session_state.selected_article = article
                         st.rerun()
                     else:
-                        st.warning("기사를 가져올 수 없었어. URL을 다시 확인해줘!")
+                        explanation = "❌ 기사를 가져올 수 없었어요. URL을 확인해주세요. 🦉"
+                        st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                        log_event(
+                            "news_url_add_error",
+                            surface="sidebar",
+                            message=user_input,  # 사용자 입력 메시지
+                            payload={
+                                "url": url,
+                                "error": "파싱 실패"
+                            }
+                        )
+                        st.rerun()
+                        
                 except Exception as e:
-                    st.error(f"기사 파싱 중 오류 발생: {e}")
+                    explanation = f"❌ 오류가 발생했어요: {str(e)} 🦉"
+                    st.session_state.chat_history.append({"role": "assistant", "content": explanation})
                     log_event(
-                        "news_parse_error",
-                        source="chat",
+                        "news_url_add_error",
                         surface="sidebar",
-                        message=user_input,
-                        url=url,
-                        error=str(e)
+                        message=user_input,  # 사용자 입력 메시지
+                        payload={
+                            "url": url,
+                            "error": str(e)
+                        }
                     )
+                    st.rerun()
             
             # URL 처리 완료 후 함수 종료
             return
 
-        # 0-1) 기사 찾기 요청 감지 및 처리
+        # 📰 기사 찾기 요청 감지 및 처리
         is_search_request, keyword = detect_article_search_request(user_input)
         if is_search_request and keyword:
-            with st.spinner(f"오늘 '{keyword}' 관련 기사를 찾는 중..."):
-                # 1단계: Supabase에서 관련 기사 검색
+            with st.spinner(f"🔍 '{keyword}' 관련 뉴스를 찾는 중..."):
+                # 1단계: Supabase에서 관련 뉴스 검색
                 supabase_articles = search_news_from_supabase(keyword, limit=5)
                 
-                # 2단계: 현재 기사 리스트에서도 검색 (오늘 로드된 기사 중)
+                # 2단계: 현재 뉴스 리스트에서도 검색 (이미 로드된 뉴스 중에서)
                 articles = st.session_state.get("news_articles", [])
                 matched_article = search_related_article(articles, keyword)
                 
-                # 3단계: 모든 결과 병합 (Supabase 결과 + 현재 리스트 결과)
+                # 3단계: 모든 결과 합치기 (Supabase 결과 + 현재 리스트 결과)
                 all_found_articles = []
                 seen_ids = set()
                 
@@ -476,7 +259,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                         all_found_articles.append(matched_article)
                         seen_ids.add(article_id)
                 
-                # Supabase 결과 추가 (중복 제거)
+                # Supabase에서 찾은 기사 추가
                 for article in supabase_articles:
                     article_id = article.get("id")
                     if article_id and article_id not in seen_ids:
@@ -484,38 +267,59 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                         seen_ids.add(article_id)
                 
                 if all_found_articles:
+                    # 찾은 기사들을 챗 히스토리에 특별한 형식으로 저장
                     article_count = len(all_found_articles)
-                    explanation = f"✅ '{keyword}' 관련 기사를 {article_count}개 찾았어! 아래에서 선택해줘."
+                    explanation = f"✅ '{keyword}' 관련 최신 기사를 {article_count}개 찾았어! 아래 버튼에서 선택해줘!🦉"
+                    
+                    # 챗 히스토리에 메시지와 기사 목록 저장 (검색 키워드도 함께 저장)
                     st.session_state.chat_history.append({
                         "role": "assistant",
                         "content": explanation,
-                        "articles": all_found_articles  # 여러 기사를 리스트로 저장
+                        "articles": all_found_articles,  # 특별한 필드로 기사 목록 저장
+                        "search_keyword": keyword  # 검색 키워드 저장 (기사 선택 시 추적용)
                     })
+                    
+                    # 검색된 기사 ID 목록 추출
+                    found_article_ids = [article.get("id") for article in all_found_articles if article.get("id")]
                     
                     # 로그 기록
                     log_event(
                         "news_search_from_chat",
-                        source="chat",
                         surface="sidebar",
-                        message=user_input,
+                        message=user_input,  # 사용자 입력 메시지
                         payload={
                             "keyword": keyword,
                             "found_count": article_count,
-                            "supabase_results": len(supabase_articles)
+                            "source": "chat",
+                            "supabase_results": len(supabase_articles),
+                            "local_results": 1 if matched_article else 0,
+                            "article_ids": found_article_ids  # 검색된 기사 ID 목록
                         }
                     )
                     
                     st.rerun()
                 else:
-                    explanation = f"'{keyword}' 관련 기사를 찾지 못했어. 다른 키워드로 검색해볼까?"
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": explanation
-                    })
+                    # 기사를 찾지 못함
+                    explanation = f"❌ '{keyword}'와 관련된 기사를 찾지 못했어요. 다른 키워드로 시도해보세요. 🦉"
+                    st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+                    log_event(
+                        "news_search_failed",
+                        surface="sidebar",
+                        message=user_input,  # 사용자 입력 메시지
+                        payload={
+                            "keyword": keyword,
+                            "source": "chat"
+                        }
+                    )
                     st.rerun()
             
-            # 기사 검색 처리 완료 후 함수 종료
+            # 기사 찾기 처리 완료 후 함수 종료
             return
+
+        explanation = None
+        matched_term = None
+        is_financial_question = False  # 금융 용어 질문인지 판단
+        api_info = None  # OpenAI API 정보 (초기화)
 
         # 1) RAG 정확 매칭 우선 (완전 일치 검색)
         if st.session_state.get("rag_initialized", False):
@@ -620,121 +424,34 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                     )
                     break
 
-        # 3) 금융 용어가 아닌 일반 질문: 질문 패턴에 따라 답변 형식 결정
+        # 3) 금융 용어가 아닌 일반 질문: LLM 백업 (use_openai=True일 때만)
         if explanation is None and not is_financial_question:
-            # 조사 제거 함수
-            def remove_particles(term: str) -> str:
-                """
-                용어에서 조사(가, 이, 을, 를, 은, 는, 와, 과, 로, 의 등) 제거
-                
-                Args:
-                    term: 조사가 포함된 용어 (예: "융자가")
-                
-                Returns:
-                    조사가 제거된 용어 (예: "융자")
-                """
-                particles = ['가', '이', '을', '를', '은', '는', '와', '과', '로', '의', '에', '에서', '부터', '까지', '서', '으로', '도', '만']
-                for particle in particles:
-                    if term.endswith(particle):
-                        term = term[:-len(particle)]
-                        break
-                return term
-            
-            # 사용자 입력에서 용어 추출 시도 (예: "융자가 뭐야?" -> "융자", "융자" -> "융자")
-            extracted_term = None
-            # 질문 패턴에서 용어 추출 (예: "~가 뭐야?", "~이 뭐야?", "~는?", "~이란?", "~란?")
-            patterns = [
-                r"([가-힣a-zA-Z0-9]+)(?:가|이|은|는|을|를)?\s*(?:뭐야|무엇|무엇인지|무엇인가|무엇이야|무엇입니까|이야|인가|이란|란|이냐|냐|에 대해|에 대해서)",
-                r"(?:뭐야|무엇|무엇인지|무엇인가|무엇이야|무엇입니까|이야|인가|이란|란|이냐|냐|에 대해|에 대해서)\s*([가-힣a-zA-Z0-9]+)",
-                r"([가-힣a-zA-Z0-9]+)\s*(?:이란|란|이야|인가|에 대해|에 대해서)",
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, user_input, re.IGNORECASE)
-                if match:
-                    extracted_term = match.group(1).strip()
-                    # 조사 제거
-                    extracted_term = remove_particles(extracted_term)
-                    # 너무 짧거나 길면 용어로 간주하지 않음 (1~10자)
-                    if 1 <= len(extracted_term) <= 10:
-                        break
-                    else:
-                        extracted_term = None
-            
-            # 질문 패턴으로 추출 실패 시 입력이 짧은 용어 하나인지 확인 (예: "융자", "융자가")
-            if not extracted_term:
-                # 공백 없이 1~15자의 용어인지 확인 (조사 포함 고려)
-                cleaned_input = user_input.strip()
-                if re.match(r'^[가-힣a-zA-Z0-9]{1,15}$', cleaned_input):
-                    extracted_term = remove_particles(cleaned_input)
-                    # 조사 제거 후 너무 짧으면 용어로 간주하지 않음
-                    if len(extracted_term) < 1:
-                        extracted_term = None
-            
-            # 질문 패턴 판단: 금융 용어 질문인지 일반 질문인지
-            is_term_question = False
-            if extracted_term:
-                # 금융 관련 키워드 체크
-                financial_keywords = [
-                    '금융', '투자', '주식', '금리', '환율', '배당', '채권', '은행', '예금', '적금',
-                    '대출', '이자', '경제', '시장', '주가', '코스피', '원화', '달러', '부동산',
-                    '세금', '보험', '펀드', '자산', '재무', '통화', '정책', '용어', '융자', '관세', '인플레이션',
-                    '디플레이션', 'GDP', 'CPI', 'PER', 'PBR', 'ROE', 'ROA', '유동성', '이익률', '수익률', '인수', '합병'
-                ]
-                # 추출된 용어가 금융 키워드를 포함하는지 또는 질문이 금융 키워드를 포함하는지 확인
-                has_financial_keyword = any(kw in user_input for kw in financial_keywords) or any(kw in extracted_term for kw in financial_keywords)
-                # 용어 정의 질문 패턴 체크
-                is_definition_question = bool(re.search(r'(?:뭐야|무엇|무엇인지|무엇인가|무엇이야|무엇입니까|이야|인가|이란|란|이냐|냐|정의|설명해줘|에 대해|에 대해서)', user_input, re.IGNORECASE))
-                
-                # 키워드나 질문 패턴으로 판단할 수 없으면 RAG 검색으로 확인
-                if not has_financial_keyword and not is_definition_question:
-                    # RAG에서 찾은 용어로 확인해보고 RAG에서 금융 용어만 검색
-                    if st.session_state.get("rag_initialized", False):
-                        try:
-                            rag_results = search_terms_by_rag(extracted_term, top_k=1, include_distances=True)
-                            if rag_results:
-                                distance = rag_results[0].get('_distance')
-                                # 거리 정보의 유사도 점수 확인 (낮을수록 유사, 거리는 0~2)
-                                # 0.5 이하면 금융 용어로 판단 (임의로 설정한 임계값)
-                                SIMILARITY_THRESHOLD = 0.5
-                                if distance is not None and distance <= SIMILARITY_THRESHOLD:
-                                    is_term_question = True
-                        except Exception as e:
-                            # RAG 검색 실패 시 그냥 일반 처리
-                            pass
-                else:
-                    is_term_question = True
-            
-            # 금융 용어 질문이면 구조화된 형식, 일반 질문이면 자연스러운 대화 형식
-            try:
-                if is_term_question:
-                    # 금융 용어 질문: 구조화된 형식 (📘 정의, 💡 영향, 🌟 비유)
-                    explanation = generate_structured_persona_reply(
-                        user_input=user_input,
-                        term=extracted_term,  # 추출된 용어 전달
-                        context=None,
-                        temperature=0.3
+            if use_openai:
+                sys = {
+                    "role": "system",
+                    "content": (
+                        "너는 친근하고 박식한 AI 어시스턴트야. "
+                        "사용자의 질문에 정확하고 도움이 되는 답변을 제공해줘. "
+                        "금융 관련 질문이 아니어도 최선을 다해 답변하되, "
+                        "확실하지 않은 내용은 정직하게 모른다고 말해줘."
                     )
-                    api_info = {"via": "structured_persona"}
-                else:
-                    # 일반 질문: 자연스러운 대화 형식 (자유로운 답변)
-                    explanation = albwoong_persona_reply(
-                        user_input=user_input,
-                        term=None,
-                        context=None,
-                        temperature=0.3
-                    )
-                    api_info = {"via": "persona_natural"}
-            except Exception as e:
-                # LLM 연결 실패 시 fallback
+                }
+                usr = {
+                    "role": "user",
+                    "content": user_input
+                }
                 try:
-                    explanation = albwoong_persona_reply(user_input)
-                    api_info = {"via": "persona_fallback", "error": str(e)}
-                except Exception as e2:
-                    explanation = (
-                        f"죄송해! 지금은 답변을 생성하기 어려워. "
-                        f"다시 시도하거나 다른 질문을 해줘! (오류: {str(e2)})"
-                    )
-                    api_info = {"error": {"type": type(e2).__name__, "message": str(e2)}}
+                    explanation, api_info = llm_chat([sys, usr], temperature=0.7, max_tokens=500, return_metadata=True)
+                except Exception as e:
+                    explanation = albwoong_persona_reply(user_input, style_opt="짧게")
+                    api_info = {
+                        "error": {
+                            "type": type(e).__name__,
+                            "message": str(e)
+                        }
+                    }
+            else:
+                explanation = albwoong_persona_reply(user_input, style_opt="짧게")
 
         # 로깅 + 응답 축적
         latency = int((time.time() - t0) * 1000)
@@ -761,45 +478,6 @@ def render(terms: dict[str, dict], use_openai: bool = False):
             log_event("chat_response", **log_kwargs)
         
         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
-        # 메시지 추가 후 자동 스크롤을 위한 JavaScript 실행 (챗봇 내부 스크롤만)
-        st_html(
-            """
-            <script>
-            setTimeout(() => {
-                const chatBox = window.parent.document.getElementById('chat-scroll-box');
-                if (chatBox) {
-                    // 느린 속도의 부드러운 스크롤 애니메이션으로 최신 메시지로 이동
-                    const targetScroll = chatBox.scrollHeight;
-                    const startScroll = chatBox.scrollTop;
-                    const distance = targetScroll - startScroll;
-                    const duration = 400; // 애니메이션 지속 시간 (ms) - 느린 속도
-                    const startTime = performance.now();
-                    
-                    function animateScroll(currentTime) {
-                        const elapsed = currentTime - startTime;
-                        const progress = Math.min(elapsed / duration, 1);
-                        
-                        // easeOutCubic 함수로 부드러운 감속
-                        const easeOutCubic = 1 - Math.pow(1 - progress, 3);
-                        const currentScroll = startScroll + (distance * easeOutCubic);
-                        
-                        chatBox.scrollTop = currentScroll;
-                        
-                        if (progress < 1) {
-                            requestAnimationFrame(animateScroll);
-                        } else {
-                            // 애니메이션 완료 후 정확한 위치로 이동
-                            chatBox.scrollTop = targetScroll;
-                        }
-                    }
-                    
-                    requestAnimationFrame(animateScroll);
-                }
-            }, 150);
-            </script>
-            """,
-            height=0,
-        )
         st.rerun()
 
     # 대화 초기화(변경)

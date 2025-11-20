@@ -111,7 +111,8 @@ def get_or_create_user_id() -> str:
     순서:
       1️⃣ URL 쿼리파라미터(uid) → 외부에서 전달된 경우
       2️⃣ 브라우저 localStorage → 동일 브라우저 재방문
-      3️⃣ 새 UUID 생성 → 최초 방문자
+      3️⃣ 로컬 파일(user_info.json) → 동일 컴퓨터 재방문 (로컬 환경에서 중요!)
+      4️⃣ 새 UUID 생성 → 최초 방문자
     """
 
     # 1️⃣ URL query parameter에서 uid 가져오기
@@ -138,7 +139,14 @@ def get_or_create_user_id() -> str:
         persist_user_id(uid_browser)
         return uid_browser
 
-    # 3️⃣ 위 두 가지 모두 없으면 새 user_id 생성
+    # 3️⃣ 로컬 파일에서 user_id 읽기 (로컬 환경에서 중요!)
+    # 로컬 파일은 도메인과 무관하게 동일 컴퓨터에서 재사용 가능
+    uid_local = _read_local_user_id()
+    if uid_local:
+        persist_user_id(uid_local)  # localStorage에도 동기화
+        return uid_local
+
+    # 4️⃣ 위 세 가지 모두 없으면 새 user_id 생성
     # 서버와 동일한 UUID 형식 사용 (36자리 UUID)
     new_uid = str(uuid.uuid4())  # UUID 형식: "7b4395ed-af96-41aa-b1ff-c24062b2986f"
     persist_user_id(new_uid)

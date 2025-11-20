@@ -139,8 +139,8 @@ def main():
     st.session_state.setdefault("main_view", "뉴스/챗봇")
 
     with st.sidebar:
-        # 모든 사용자가 로그 뷰어 옵션 표시 (멘토링용)
-        view_options = ["뉴스/챗봇", "로그 뷰어"]
+        # 화면 선택 라디오 버튼
+        view_options = ["뉴스/챗봇", "대시보드", "로그 뷰어"]
         
         current_view = st.session_state.get("main_view", "뉴스/챗봇")
         
@@ -150,9 +150,12 @@ def main():
         # LLM 연결 진단 패널 숨김 (프로덕션 환경)
         # render_llm_diagnostics()
 
-    if st.session_state["main_view"] == "로그 뷰어":
-        st.title("📚 내부 로그 뷰어")
-        LogViewer()
+    # 대시보드 또는 로그 뷰어 선택 시
+    if st.session_state["main_view"] == "대시보드":
+        LogViewer(show_mode="dashboard")
+        return
+    elif st.session_state["main_view"] == "로그 뷰어":
+        LogViewer(show_mode="log_viewer")
         return
 
     # ② 페이지 기본 레이아웃 분할 (7:3 비율)
