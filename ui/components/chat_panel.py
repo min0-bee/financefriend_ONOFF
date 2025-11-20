@@ -128,6 +128,12 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                 st.session_state.selected_article = article
                 st.session_state.detail_enter_logged = False
                 
+                # 검색 키워드 정보 추출 (해당 메시지에서)
+                search_keyword = None
+                if msg_idx < len(st.session_state.chat_history):
+                    message = st.session_state.chat_history[msg_idx]
+                    search_keyword = message.get("search_keyword")
+                
                 # 로그 기록
                 log_event(
                     "news_selected_from_chat",
@@ -135,7 +141,10 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                     surface="sidebar",
                     payload={
                         "title": article_title,
-                        "source": "chat_button"
+                        "source": "chat_button",
+                        "search_keyword": search_keyword,  # 검색 키워드 정보
+                        "url": article.get("url"),  # 기사 URL
+                        "article_date": article.get("date")  # 기사 날짜
                     }
                 )
                 
@@ -187,10 +196,12 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                             "news_url_added_from_chat",
                             news_id=article.get("id"),
                             surface="sidebar",
+                            message=user_input,  # 사용자 입력 메시지 (URL 포함)
                             payload={
                                 "url": url,
                                 "title": article.get("title"),
-                                "source": "chat"
+                                "source": "chat",
+                                "url_parsed": True
                             }
                         )
                         
@@ -201,6 +212,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                         log_event(
                             "news_url_add_error",
                             surface="sidebar",
+                            message=user_input,  # 사용자 입력 메시지
                             payload={
                                 "url": url,
                                 "error": "파싱 실패"
@@ -214,6 +226,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                     log_event(
                         "news_url_add_error",
                         surface="sidebar",
+                        message=user_input,  # 사용자 입력 메시지
                         payload={
                             "url": url,
                             "error": str(e)
@@ -258,22 +271,29 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                     article_count = len(all_found_articles)
                     explanation = f"✅ '{keyword}' 관련 최신 기사를 {article_count}개 찾았어! 아래 버튼에서 선택해줘!🦉"
                     
-                    # 챗 히스토리에 메시지와 기사 목록 저장
+                    # 챗 히스토리에 메시지와 기사 목록 저장 (검색 키워드도 함께 저장)
                     st.session_state.chat_history.append({
                         "role": "assistant",
                         "content": explanation,
-                        "articles": all_found_articles  # 특별한 필드로 기사 목록 저장
+                        "articles": all_found_articles,  # 특별한 필드로 기사 목록 저장
+                        "search_keyword": keyword  # 검색 키워드 저장 (기사 선택 시 추적용)
                     })
+                    
+                    # 검색된 기사 ID 목록 추출
+                    found_article_ids = [article.get("id") for article in all_found_articles if article.get("id")]
                     
                     # 로그 기록
                     log_event(
                         "news_search_from_chat",
                         surface="sidebar",
+                        message=user_input,  # 사용자 입력 메시지
                         payload={
                             "keyword": keyword,
                             "found_count": article_count,
                             "source": "chat",
-                            "supabase_results": len(supabase_articles)
+                            "supabase_results": len(supabase_articles),
+                            "local_results": 1 if matched_article else 0,
+                            "article_ids": found_article_ids  # 검색된 기사 ID 목록
                         }
                     )
                     
@@ -285,6 +305,7 @@ def render(terms: dict[str, dict], use_openai: bool=False):
                     log_event(
                         "news_search_failed",
                         surface="sidebar",
+                        message=user_input,  # 사용자 입력 메시지
                         payload={
                             "keyword": keyword,
                             "source": "chat"
