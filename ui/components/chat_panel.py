@@ -487,3 +487,21 @@ def render(terms: dict[str, dict], use_openai: bool=False):
         # ── NEW: 다음 렌더에서 다시 인사말 나오도록 ──
         st.session_state.intro_shown = False
         st.rerun()
+
+    # 안내 박스 추가
+    st.markdown("---")
+    st.header("📖 사용 방법")
+    st.markdown("""
+    **1. 뉴스 선택**
+    - 목록에서 관심 있는 뉴스를 클릭하세요.
+
+    **2. 용어 확인**
+    - 하이라이트된 금융 용어를 클릭하세요.
+
+    **3. URL 붙여넣기**
+    - 대화창에 뉴스 URL을 입력하면 기사를 불러올 수 있어요.
+                
+    **4. 기사 검색**
+    - "반도체 관련 기사 찾아줘" 같은 문장으로 뉴스를 검색할 수 있어요.
+    """)
+    st.markdown("---")

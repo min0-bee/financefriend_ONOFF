@@ -4,21 +4,7 @@ from core.config import API_ENABLE, API_BASE_URL, SUPABASE_ENABLE
 
 def render(terms: dict[str, dict]):
     with st.sidebar:
-        st.header("📖 사용 방법")
         
-        # 간략한 사용 방법 안내
-        st.markdown("""
-        **1. 뉴스 선택**
-        - 목록에서 관심 있는 뉴스를 클릭하세요
-        
-        **2. 용어 확인**
-        - 하이라이트된 금융 용어를 클릭하세요
-        
-        **3. 설명 확인**
-        - 오른쪽 챗봇에서 자세한 설명을 확인하세요
-        """)
-        
-        st.markdown("---")
         
         # API 전송 상태 표시
         if API_ENABLE:

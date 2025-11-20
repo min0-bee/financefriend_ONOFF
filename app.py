@@ -158,8 +158,8 @@ def main():
         LogViewer(show_mode="log_viewer")
         return
 
-    # ② 페이지 기본 레이아웃 분할 (7:3 비율)
-    col_main, col_chat = st.columns([7, 3])
+    # ② 페이지 기본 레이아웃 분할 (5.5:4.5 비율)
+    col_main, col_chat = st.columns([5.5, 4.5] , gap="large")
 
     # ③ 메인 영역 (뉴스 요약, 리스트, 상세)
     with col_main:
