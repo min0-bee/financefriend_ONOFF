@@ -343,7 +343,10 @@ def _fetch_event_logs_from_supabase(user_id: Optional[str] = None, limit: int = 
         if user_id:
             query = query.eq("user_id", user_id)
         
-        query = query.order("event_time", desc=True).limit(limit)
+        query = query.order("event_time", desc=True)
+        # Supabase의 기본 limit이 1000이므로 명시적으로 limit 설정
+        if limit > 0:
+            query = query.limit(limit)
         
         response = query.execute()
         
@@ -481,9 +484,9 @@ def render(show_mode: str = "dashboard"):
     
     # Supabase에서 이벤트 로그 가져오기
     with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
-        # WAU 계산을 위해 최근 7일 데이터를 충분히 가져와야 함
-        # limit을 늘려서 최근 데이터를 더 많이 가져오기
-        df = _fetch_event_logs_from_supabase(user_id=None, limit=5000)  # 2000 -> 5000으로 증가
+        # 전체 데이터를 가져오기 위해 limit을 충분히 크게 설정
+        # 전체 데이터가 4000개 정도이므로 limit을 더 크게 설정
+        df = _fetch_event_logs_from_supabase(user_id=None, limit=10000)  # 5000 -> 10000으로 증가
 
         if df.empty:
             st.info("📭 아직 이벤트 로그가 없습니다. 앱을 사용하면 데이터가 수집됩니다.")
@@ -538,178 +541,98 @@ def render(show_mode: str = "dashboard"):
 
 def _render_service_health_tab(df_view: pd.DataFrame, session_column: str):
     """
-    🔴 서비스 성능 데이터 탭: "MVP가 멈추지 않고 버틸 수 있는가?"
-    
-    주요 분석 항목:
-    - 뉴스 클릭/상세 진입 메트릭
-    - 뉴스 상세 보기 로딩 시간 (하이라이트, 용어 필터링)
-    - RAG 응답 시간 (glossary_answer, chat_response)
-    - 자연어 검색 처리 속도
-    - URL 파싱 성공/실패율
-    - Streamlit 세션 수 및 동시 접속 부하
+    🔴 서비스 성능 데이터 탭: 핵심 4개 지표만 표시
+    - 뉴스 상세 로딩 시간 평균
+    - 챗봇 응답 시간 평균
+    - URL 파싱 실패율
+    - 전체 오류 발생률 (RAG 에러 포함)
     """
     st.markdown("### 🔴 서비스 성능 데이터 (Service Health)")
-    st.markdown("**목표**: 서비스의 기술적 안정성 측정 - 모든 분석의 기반")
+    st.markdown("**목표**: 서비스의 기술적 안정성 측정 - 핵심 지표만 표시")
     
-    # 주요 성능 메트릭
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        news_clicks = int((df_view["event_name"] == "news_click").sum())
-        st.metric("뉴스 클릭", news_clicks)
-    with col2:
-        detail_opens = int((df_view["event_name"] == "news_detail_open").sum())
-        st.metric("상세 진입", detail_opens)
-    with col3:
-        # Glossary 클릭과 챗봇 질문을 하나로 묶음 (둘 다 RAG 사용)
-        glossary_clicks = int((df_view["event_name"] == "glossary_click").sum())
-        chat_questions = int((df_view["event_name"] == "chat_question").sum())
-        rag_questions = glossary_clicks + chat_questions
-        st.metric("Glossary/질문 (RAG)", rag_questions)
-    with col4:
-        url_errors = int((df_view["event_name"] == "news_url_add_error").sum())
-        st.metric("URL 파싱 실패", url_errors)
-    
-    # 성능 요약 메트릭 (KPI에서 이동)
-    st.markdown("#### ⚡ 성능 요약")
-    
-    # 평균 뉴스 하이라이트 속도 (캐시 히트/미스 구분)
+    # 1. 뉴스 상세 로딩 시간 평균
     detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
-    highlight_latencies = []
-    highlight_latencies_cache_miss = []  # 캐시 미스만 (실제 성능 문제 파악용)
-    highlight_latencies_cache_hit = []   # 캐시 히트만 (참고용)
-    
+    detail_latencies = []
     for idx, row in detail_events.iterrows():
         perf_data = _extract_perf_data(row)
         if perf_data and isinstance(perf_data, dict):
-            highlight_ms = perf_data.get("highlight_ms")
-            cache_hit = perf_data.get("highlight_cache_hit", False)
-            
-            if highlight_ms is not None:
+            total_ms = perf_data.get("total_ms")
+            if total_ms is None:
+                highlight_ms = perf_data.get("highlight_ms", 0)
+                terms_filter_ms = perf_data.get("terms_filter_ms", 0)
+                total_ms = highlight_ms + terms_filter_ms
+            if total_ms and total_ms > 0:
                 try:
-                    highlight_value = float(highlight_ms)
-                    # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
-                    if highlight_value > 0 and highlight_value < 100000:  # 100초 이상은 제외
-                        highlight_latencies.append(highlight_value)
-                        # 캐시 히트/미스 구분
-                        if cache_hit:
-                            highlight_latencies_cache_hit.append(highlight_value)
-                        else:
-                            highlight_latencies_cache_miss.append(highlight_value)
+                    detail_latencies.append(float(total_ms))
                 except (ValueError, TypeError):
                     pass
+    avg_detail_latency = sum(detail_latencies) / len(detail_latencies) if detail_latencies else None
     
-    avg_highlight_latency = sum(highlight_latencies) / len(highlight_latencies) if highlight_latencies else None
-    avg_highlight_cache_miss = sum(highlight_latencies_cache_miss) / len(highlight_latencies_cache_miss) if highlight_latencies_cache_miss else None
-    avg_highlight_cache_hit = sum(highlight_latencies_cache_hit) / len(highlight_latencies_cache_hit) if highlight_latencies_cache_hit else None
-    
-    # 챗봇 응답 속도
+    # 2. 챗봇 응답 시간 평균
     chat_response_events = df_view[df_view["event_name"].isin(["chat_response", "glossary_answer"])].copy()
     chat_latencies = []
     for idx, row in chat_response_events.iterrows():
-        # 여러 소스에서 latency_ms 추출 시도
         latency_ms = None
-        
-        # 1. perf_data에서 추출
         perf_data = _extract_perf_data(row)
         if perf_data and isinstance(perf_data, dict):
-            latency_ms = perf_data.get("latency_ms")
-            # latency_ms가 없으면 total_ms 사용
-            if latency_ms is None:
-                latency_ms = perf_data.get("total_ms")
-        
-        # 2. payload에서 직접 추출
+            latency_ms = perf_data.get("latency_ms") or perf_data.get("total_ms")
         if latency_ms is None:
             payload = _parse_payload(row.get("payload"))
             if payload:
-                latency_ms = payload.get("latency_ms")
-                if latency_ms is None:
-                    latency_ms = payload.get("total_ms")
-        
-        # 3. 컬럼에서 직접 추출
+                latency_ms = payload.get("latency_ms") or payload.get("total_ms")
         if latency_ms is None:
             latency_ms = row.get("latency_ms")
-        
         if latency_ms is not None:
             try:
                 latency_value = float(latency_ms)
-                # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
-                if latency_value > 0 and latency_value < 1000000:  # 1000초 이상은 제외
+                if latency_value > 0 and latency_value < 1000000:
                     chat_latencies.append(latency_value)
             except (ValueError, TypeError):
                 pass
     avg_chat_latency = sum(chat_latencies) / len(chat_latencies) if chat_latencies else None
     
-    # 성능 요약 메트릭 표시
-    perf_col1, perf_col2, perf_col3 = st.columns(3)
-    with perf_col1:
-        if avg_highlight_latency is not None:
-            st.metric("평균 하이라이트 속도", f"{avg_highlight_latency:.0f}ms")
-            # 캐시 히트/미스 정보 표시
-            if avg_highlight_cache_hit is not None and avg_highlight_cache_miss is not None:
-                st.caption(f"캐시 히트: {avg_highlight_cache_hit:.0f}ms | 캐시 미스: {avg_highlight_cache_miss:.0f}ms")
-            elif avg_highlight_cache_hit is not None:
-                st.caption(f"캐시 히트: {avg_highlight_cache_hit:.0f}ms")
-            elif avg_highlight_cache_miss is not None:
-                st.caption(f"캐시 미스: {avg_highlight_cache_miss:.0f}ms")
-        else:
-            st.metric("평균 하이라이트 속도", "N/A")
+    # 3. URL 파싱 실패율
+    url_events = df_view[df_view["event_name"].isin(["news_url_added_from_chat", "news_url_add_error"])]
+    url_error_count = int((url_events["event_name"] == "news_url_add_error").sum()) if len(url_events) > 0 else 0
+    url_total_count = len(url_events)
+    url_error_rate = (url_error_count / url_total_count * 100) if url_total_count > 0 else 0
     
-    with perf_col2:
-        # 95 percentile latency
-        if highlight_latencies:
-            p95_latency = pd.Series(highlight_latencies).quantile(0.95)
-            st.metric("95% 하이라이트 속도", f"{p95_latency:.0f}ms")
-        else:
-            st.metric("95% 하이라이트 속도", "N/A")
+    # 4. 전체 오류 발생률 (RAG 에러 포함)
+    # RAG 에러는 payload에 error가 있는 경우로 판단
+    error_events = df_view[df_view["event_name"].isin([
+        "news_url_add_error",
+        "glossary_answer",
+        "chat_response"
+    ])]
+    total_errors = url_error_count
+    for idx, row in error_events.iterrows():
+        if row["event_name"] in ["glossary_answer", "chat_response"]:
+            payload = _parse_payload(row.get("payload"))
+            if payload and payload.get("error"):
+                total_errors += 1
+    total_events = len(df_view)
+    total_error_rate = (total_errors / total_events * 100) if total_events > 0 else 0
     
-    with perf_col3:
+    # 핵심 4개 지표 표시
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if avg_detail_latency is not None:
+            st.metric("뉴스 상세 로딩 시간", f"{avg_detail_latency:.0f}ms")
+            st.caption(f"측정 건수: {len(detail_latencies)}건")
+        else:
+            st.metric("뉴스 상세 로딩 시간", "N/A")
+    with col2:
         if avg_chat_latency is not None:
-            st.metric("평균 챗봇 응답 속도", f"{avg_chat_latency:.0f}ms")
+            st.metric("챗봇 응답 시간", f"{avg_chat_latency:.0f}ms")
+            st.caption(f"측정 건수: {len(chat_latencies)}건")
         else:
-            st.metric("평균 챗봇 응답 속도", "N/A")
-    
-    st.markdown("---")
-    
-    # 성능 데이터 추출
-    perf_events = df_view[df_view["event_name"].isin([
-        "news_click", "news_detail_open", "glossary_click", "glossary_answer",
-        "chat_response", "news_search_from_chat"
-    ])].copy()
-    
-    if not perf_events.empty:
-        perf_events["perf_data"] = perf_events.apply(_extract_perf_data, axis=1)
-        perf_events_with_data = perf_events[perf_events["perf_data"].notna()]
-        
-        # 1. 뉴스 상세 보기 로딩 시간
-        _render_detail_performance(perf_events_with_data)
-        
-        # 2. RAG 응답 시간
-        _render_rag_performance(perf_events_with_data)
-        
-        # 3. 자연어 검색 처리 속도
-        _render_search_performance(df_view)
-        
-        # 4. 하이라이트 계산 시간 (detail 성능에 포함)
-        
-        # 5. URL 파싱 성공/실패
-        _render_url_parsing_quality(df_view)
-        
-        # 6. Streamlit 세션 수 / 동시 접속 부하
-        _render_session_load(df_view, session_column)
-    else:
-        st.info("📊 성능 데이터가 아직 없습니다.")
-    
-    # 최근 이벤트 로그
-    st.markdown("### 📄 최근 성능 이벤트")
-    perf_recent = df_view[df_view["event_name"].isin([
-        "news_click", "news_detail_open", "glossary_click", "glossary_answer",
-        "chat_question", "chat_response", "news_url_add_error"
-    ])].sort_values("event_time", ascending=False).head(50)
-    
-    display_cols = ["event_time", "event_name", "user_id", "session_id", "latency_ms"]
-    available_cols = [col for col in display_cols if col in perf_recent.columns]
-    if available_cols:
-        st.dataframe(perf_recent[available_cols], use_container_width=True, height=300)
+            st.metric("챗봇 응답 시간", "N/A")
+    with col3:
+        st.metric("URL 파싱 실패율", f"{url_error_rate:.1f}%")
+        st.caption(f"실패: {url_error_count}건 / 전체: {url_total_count}건")
+    with col4:
+        st.metric("전체 오류 발생률", f"{total_error_rate:.2f}%")
+        st.caption(f"오류: {total_errors}건 / 전체: {total_events}건")
 
 def _render_detail_performance(perf_events_with_data: pd.DataFrame):
     """뉴스 상세 보기 성능 분석"""
@@ -764,22 +687,6 @@ def _render_detail_performance(perf_events_with_data: pd.DataFrame):
             st.metric("평균 용어 필터링", f"{avg_filter:.0f}ms")
             st.metric("평균 전체 렌더링", f"{avg_total:.0f}ms")
             st.metric("캐시 히트율", f"{cache_hit_rate:.1f}%")
-        
-        with col2:
-            st.markdown("##### 🔍 병목 지점 분석")
-            if len(perf_df) > 0:
-                highlight_pct = (perf_df["하이라이트 처리 (ms)"] / perf_df["전체 렌더링 (ms)"] * 100).mean()
-                filter_pct = (perf_df["용어 필터링 (ms)"] / perf_df["전체 렌더링 (ms)"] * 100).mean()
-                
-                st.write(f"**하이라이트 처리 비율**: {highlight_pct:.1f}%")
-                st.write(f"**용어 필터링 비율**: {filter_pct:.1f}%")
-                
-                if highlight_pct > 50:
-                    st.warning("⚠️ 하이라이트 처리가 주요 병목입니다!")
-                elif filter_pct > 30:
-                    st.warning("⚠️ 용어 필터링이 병목일 수 있습니다.")
-                else:
-                    st.success("✅ 성능이 양호합니다.")
         
         # 시각화
         if px is not None and len(perf_df) > 0:
@@ -968,59 +875,20 @@ def _render_session_load(df_view: pd.DataFrame, session_column: str):
 
 def _render_content_quality_tab(df_view: pd.DataFrame):
     """
-    🟡 뉴스 콘텐츠 품질 데이터 탭: "우리 제품이 제공하는 뉴스 데이터 자체가 좋은가?"
-    
-    주요 분석 항목:
-    - 뉴스 소스 분석 (DB 뉴스 vs 임시 뉴스)
-    - 뉴스 출처(언론사) 분포
-    - 금융/비금융 기사 비중
-    - 본문 길이 분포 및 누락 비율
-    - 제목·본문 중복률
-    - 임팩트 점수 분포
-    - 중복 기사 비율
+    🟡 뉴스 콘텐츠 품질 데이터 탭: 핵심 지표만 표시
     - 뉴스 수집량 추세
-    - 기초 뉴스 지표 분석 + 라이다 차트
-    - 검색 결과 뉴스 인기 분석
-    - URL 파싱 품질
+    - 금융/비금융 기사 비중
+    - 본문 누락 비율
+    - URL 파싱 실패율
+    - 언론사 분포
+    - 뉴스 카테고리 분포 (LLM 결과)
+    - 카테고리별 사용자 참여도
     """
     st.markdown("### 🟡 뉴스 콘텐츠 품질 데이터 (Content Quality)")
-    st.markdown("**목표**: 뉴스 콘텐츠의 품질 측정 - 서비스의 핵심 자산")
+    st.markdown("**목표**: 뉴스 데이터가 망가지지 않았는지 빠르게 확인하는 품질 체크")
     
-    # DB에 있는 뉴스 데이터 총 개수 표시
-    if SUPABASE_ENABLE:
-        supabase = get_supabase_client()
-        if supabase:
-            try:
-                # deleted_at이 NULL인 뉴스 총 개수 조회
-                # news_id만 선택하여 효율적으로 개수 확인
-                count_query = (
-                    supabase.table("news")
-                    .select("news_id")
-                    .is_("deleted_at", "null")
-                )
-                count_response = count_query.execute()
-                
-                # 응답에서 개수 확인
-                if count_response.data:
-                    total_news_count = len(count_response.data)
-                else:
-                    total_news_count = 0
-                
-                if total_news_count > 0:
-                    st.markdown(f"#### 📊 DB 뉴스 데이터 총 개수: **{total_news_count:,}건**")
-                else:
-                    st.info("📊 DB에 뉴스 데이터가 없습니다.")
-            except Exception as e:
-                st.warning(f"⚠️ 뉴스 데이터 개수 조회 실패: {str(e)}")
-    
-    # 뉴스 소스 분석 (DB 뉴스 vs 임시 뉴스) - 이벤트 로그 기반
-    _render_news_source_analysis(df_view)
-    
-    # URL 파싱 품질 (이벤트 로그 기반)
+    # 1. URL 파싱 실패율 (이벤트 로그 기반)
     _render_url_parsing_quality_for_content(df_view)
-    
-    # 검색 결과 뉴스 인기 분석 (이벤트 로그 기반)
-    _render_search_result_news_popularity(df_view)
     
     # Supabase news 테이블 연동 분석
     with st.spinner("🔄 Supabase에서 뉴스 데이터를 가져오는 중..."):
@@ -1033,91 +901,27 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
         else:
             st.success(f"✅ {len(news_df):,}개의 뉴스 데이터를 불러왔습니다.")
             
-            # 주요 분석 항목들
-            _render_financial_news_ratio(news_df)
-            _render_content_length_analysis(news_df)
-            _render_content_missing_analysis(news_df)
-            _render_title_content_duplication(news_df)
-            _render_data_quality_consistency(news_df)  # 제목-URL-content-summary 일치 여부 분석
-            _render_impact_score_distribution(news_df)
-            _render_duplicate_news_analysis(news_df)
+            # 2. 뉴스 수집량 추세
             _render_news_collection_trends(news_df)
             
-            # 의미 있는 분석 패널 (프롬프트 개선 및 초보자 적합도 검증)
-            st.markdown("---")
-            st.markdown("### 📊 뉴스 카테고리 및 사용자 참여 분석")
-            _render_category_distribution_for_prompt(news_df)
-            _render_category_engagement_analysis(news_df, df_view)
-            _render_excluded_news_patterns(news_df)
+            # 3. 금융/비금융 기사 비중
+            _render_financial_news_ratio(news_df)
             
-            # 기초 뉴스 지표 분석 + 라이다 차트
+            # 4. 본문 누락 비율
+            _render_content_missing_analysis(news_df)
+            
+            # 5. 언론사 분포
+            _render_news_source_distribution(news_df)
+            
+            # 6. 뉴스 카테고리 분포 (LLM 결과)
             st.markdown("---")
-            _render_news_radar_analysis(news_df)
-
-def _render_news_source_analysis(df_view: pd.DataFrame):
-    """뉴스 소스 분석 (DB 뉴스 vs 임시 뉴스)"""
-    # news_id가 있는 이벤트 필터링
-    news_events = df_view[df_view["news_id"].notna()].copy()
-    
-    if news_events.empty:
-        return
-    
-    st.markdown("#### 📰 뉴스 소스 분석")
-    
-    # news_id를 숫자로 변환 시도
-    def is_temp_news(news_id):
-        """news_id가 임시 뉴스(음수)인지 확인"""
-        try:
-            news_id_num = float(news_id)
-            return news_id_num < 0
-        except (ValueError, TypeError):
-            return False
-    
-    news_events["is_temp"] = news_events["news_id"].apply(is_temp_news)
-    
-    # 고유한 news_id 기준으로 카운트 (중복 제거)
-    unique_news_ids = news_events["news_id"].unique()
-    unique_is_temp = [is_temp_news(nid) for nid in unique_news_ids]
-    
-    db_news_count = sum(1 for is_temp in unique_is_temp if not is_temp)
-    temp_news_count = sum(1 for is_temp in unique_is_temp if is_temp)
-    total_count = len(unique_news_ids)
-    
-    # 참고: 이벤트 건수도 표시 (중복 포함)
-    event_db_count = (~news_events["is_temp"]).sum()
-    event_temp_count = news_events["is_temp"].sum()
-    total_event_count = len(news_events)
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("DB 뉴스", f"{db_news_count:,}건")
-        st.caption(f"이벤트 건수: {event_db_count:,}건")
-    with col2:
-        st.metric("임시 뉴스 (URL 직접 입력)", f"{temp_news_count:,}건")
-        st.caption(f"이벤트 건수: {event_temp_count:,}건")
-    with col3:
-        if total_count > 0:
-            temp_ratio = (temp_news_count / total_count) * 100
-            st.metric("임시 뉴스 비율", f"{temp_ratio:.1f}%")
-        else:
-            st.metric("임시 뉴스 비율", "N/A")
-    
-    # 참고 정보 표시
-    if total_event_count > total_count:
-        st.info(f"💡 **참고**: 고유 뉴스 {total_count:,}개에 대해 총 {total_event_count:,}개의 이벤트가 발생했습니다. (같은 뉴스를 여러 번 클릭/사용한 경우 포함)")
-    
-    if total_count > 0 and px is not None:
-        source_df = pd.DataFrame({
-            "소스": ["DB 뉴스", "임시 뉴스"],
-            "건수": [db_news_count, temp_news_count]
-        })
-        fig = px.pie(
-            source_df,
-            values="건수",
-            names="소스",
-            title="뉴스 소스 분포 (고유 뉴스 기준)"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.markdown("### 📊 뉴스 카테고리 분포 (LLM 결과)")
+            _render_category_distribution_for_prompt(news_df)
+            
+            # 7. 카테고리별 사용자 참여도
+            st.markdown("---")
+            st.markdown("### 📊 카테고리별 사용자 참여도")
+            _render_category_engagement_analysis(news_df, df_view)
 
 # ============================================================================
 # Supabase news 테이블 기반 콘텐츠 품질 분석 함수들
@@ -1380,81 +1184,6 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
             }
         )
         st.plotly_chart(fig, use_container_width=True)
-        
-        # 문제가 있는 뉴스 상세 목록 (300자 미만)
-        if total_issue > 0:
-            st.markdown("##### ⚠️ 본문이 너무 짧은 뉴스 목록 (300자 미만)")
-            
-            # 필요한 컬럼만 먼저 선택하여 리스트 타입 컬럼 문제 방지
-            base_cols = []
-            if "news_id" in news_df.columns:
-                base_cols.append("news_id")
-            elif "display_id" in news_df.columns:
-                base_cols.append("display_id")
-            base_cols.extend(["title", "url", "source"])
-            
-            # 각 DataFrame에서 필요한 컬럼만 선택
-            missing_selected = missing_content[base_cols].copy() if not missing_content.empty and all(col in missing_content.columns for col in base_cols) else pd.DataFrame()
-            very_short_selected = very_short_content[base_cols].copy() if not very_short_content.empty and all(col in very_short_content.columns for col in base_cols) else pd.DataFrame()
-            short_selected = short_content[base_cols].copy() if not short_content.empty and all(col in short_content.columns for col in base_cols) else pd.DataFrame()
-            
-            # 선택된 컬럼만 concat (리스트 타입 컬럼 제외)
-            problem_list = []
-            if not missing_selected.empty:
-                problem_list.append(missing_selected)
-            if not very_short_selected.empty:
-                problem_list.append(very_short_selected)
-            if not short_selected.empty:
-                problem_list.append(short_selected)
-            
-            if problem_list:
-                problem_news = pd.concat(problem_list)
-                # 인덱스 기준으로 중복 제거
-                problem_news = problem_news[~problem_news.index.duplicated(keep='first')]
-                
-                # content_length 계산
-                if content_col == "content":
-                    # 원본 DataFrame에서 content_length 가져오기
-                    for idx in problem_news.index:
-                        if idx in news_df.index:
-                            if content_col in news_df.columns:
-                                problem_news.loc[idx, "content_length"] = len(str(news_df.loc[idx, content_col]))
-                else:
-                    for idx in problem_news.index:
-                        if idx in news_df.index:
-                            if content_col in news_df.columns:
-                                problem_news.loc[idx, "content_length"] = pd.to_numeric(news_df.loc[idx, content_col], errors='coerce')
-                
-                problem_news["content_length"] = problem_news["content_length"].fillna(0)
-                
-                problem_display_cols = base_cols + ["content_length"]
-                available_problem_cols = [col for col in problem_display_cols if col in problem_news.columns]
-                problem_df = problem_news[available_problem_cols].copy()
-                
-                # 컬럼명 한글화
-                problem_column_mapping = {
-                    "news_id": "뉴스 ID",
-                    "display_id": "뉴스 ID",
-                    "title": "제목",
-                    "url": "URL",
-                    "source": "뉴스처",
-                    "content_length": "본문 길이 (자)"
-                }
-                problem_df.columns = [problem_column_mapping.get(col, col) for col in problem_df.columns]
-                
-                # 제목과 URL 길이 제한
-                if "제목" in problem_df.columns:
-                    problem_df["제목"] = problem_df["제목"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
-                if "URL" in problem_df.columns:
-                    problem_df["URL"] = problem_df["URL"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
-                
-                # 본문 길이 순으로 정렬 (짧은 순)
-                if "본문 길이 (자)" in problem_df.columns:
-                    problem_df = problem_df.sort_values("본문 길이 (자)", ascending=True)
-                
-                st.dataframe(problem_df, use_container_width=True, height=400)
-            else:
-                st.info("📊 문제가 있는 뉴스 데이터를 가져올 수 없습니다.")
 
 def _render_title_content_duplication(news_df: pd.DataFrame):
     """제목·본문 중복률"""
@@ -1901,104 +1630,6 @@ def _render_data_quality_consistency(news_df: pd.DataFrame):
         
         st.dataframe(bad_quality, use_container_width=True, height=600)
     
-    # 각 일치도별 상세 분석
-    st.markdown("#### 📊 일치도별 상세 분석")
-    
-    tab1, tab2, tab3 = st.tabs(["제목-본문 일치도", "URL-본문 일치도", "요약-본문 일치도"])
-    
-    # ID 컬럼 선택 (news_id 또는 display_id)
-    id_col = "news_id" if "news_id" in valid_news.columns else "display_id"
-    
-    with tab1:
-        st.markdown("**제목과 본문의 일치 여부**: 제목의 핵심 키워드가 본문에 포함되는지 확인 (가중치: 70%)")
-        title_mismatch = valid_news[valid_news["title_content_match"] < 50].nsmallest(10, "title_content_match")
-        if not title_mismatch.empty:
-            mismatch_df = title_mismatch[[id_col, "title", "title_content_match"]].copy()
-            mismatch_df.columns = ["뉴스 ID", "제목", "일치도"]
-            mismatch_df["제목"] = mismatch_df["제목"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
-            st.dataframe(mismatch_df, use_container_width=True)
-        else:
-            st.info("제목-본문 불일치가 심한 뉴스가 없습니다.")
-    
-    with tab2:
-        st.markdown("**URL과 본문의 일치 여부**: URL 도메인/경로와 본문 내용의 관련성 확인 (가중치: 10%)")
-        url_mismatch = valid_news[valid_news["url_content_match"] < 50].nsmallest(10, "url_content_match")
-        if not url_mismatch.empty:
-            mismatch_df = url_mismatch[[id_col, "url", "url_content_match"]].copy()
-            mismatch_df.columns = ["뉴스 ID", "URL", "일치도"]
-            mismatch_df["URL"] = mismatch_df["URL"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
-            st.dataframe(mismatch_df, use_container_width=True)
-        else:
-            st.info("URL-본문 불일치가 심한 뉴스가 없습니다.")
-    
-    with tab3:
-        st.markdown("**요약과 본문의 일치 여부**: 요약이 본문을 정확히 요약하는지 확인 (가중치: 20%)")
-        summary_mismatch = valid_news[valid_news["summary_content_match"] < 50].nsmallest(10, "summary_content_match")
-        if not summary_mismatch.empty:
-            mismatch_df = summary_mismatch[[id_col, "summary", "summary_content_match"]].copy()
-            mismatch_df.columns = ["뉴스 ID", "요약", "일치도"]
-            mismatch_df["요약"] = mismatch_df["요약"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else str(x))
-            st.dataframe(mismatch_df, use_container_width=True)
-        else:
-            st.info("요약-본문 불일치가 심한 뉴스가 없습니다.")
-
-def _render_impact_score_distribution(news_df: pd.DataFrame):
-    """임팩트 점수 분포"""
-    if "impact_score" not in news_df.columns:
-        return
-    
-    st.markdown("#### 📊 임팩트 점수 분포")
-    
-    # impact_score가 있는 뉴스만 필터링
-    news_with_score = news_df[news_df["impact_score"].notna()].copy()
-    
-    if news_with_score.empty:
-        st.info("📊 임팩트 점수가 있는 뉴스가 없습니다.")
-        return
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        avg_score = news_with_score["impact_score"].mean()
-        st.metric("평균 임팩트 점수", f"{avg_score:.1f}")
-    with col2:
-        median_score = news_with_score["impact_score"].median()
-        st.metric("중간값 점수", f"{median_score:.1f}")
-    with col3:
-        min_score = news_with_score["impact_score"].min()
-        max_score = news_with_score["impact_score"].max()
-        st.metric("최소/최대 점수", f"{min_score:.0f} / {max_score:.0f}")
-    
-    if px is not None and len(news_with_score) > 0:
-        fig = px.histogram(
-            news_with_score,
-            x="impact_score",
-            nbins=30,
-            title="임팩트 점수 분포",
-            labels={"impact_score": "임팩트 점수", "count": "빈도"}
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 점수 구간별 분포
-        score_bins = [0, 10, 20, 30, 40, 50, 100, float('inf')]
-        score_labels = ["0-10", "10-20", "20-30", "30-40", "40-50", "50-100", "100+"]
-        news_with_score["score_range"] = pd.cut(
-            news_with_score["impact_score"], 
-            bins=score_bins, 
-            labels=score_labels, 
-            right=False
-        )
-        range_counts = news_with_score["score_range"].value_counts().sort_index()
-        
-        if len(range_counts) > 0:
-            range_df = range_counts.reset_index()
-            range_df.columns = ["점수 구간", "건수"]
-            fig2 = px.bar(
-                range_df,
-                x="점수 구간",
-                y="건수",
-                title="임팩트 점수 구간별 분포"
-            )
-            st.plotly_chart(fig2, use_container_width=True)
 
 def _render_duplicate_news_analysis(news_df: pd.DataFrame):
     """중복 기사 비율"""
@@ -2248,255 +1879,6 @@ def _extract_korean_words(text: str) -> List[str]:
     ]
     
     return filtered_words
-
-def _render_news_radar_analysis(news_df: pd.DataFrame):
-    """
-    뉴스 점수 분석 + 라이다 차트
-    
-    분석 지표:
-    - impact_score: 뉴스의 영향도 점수
-    - credibility_score: 뉴스의 신뢰도 점수
-    - urgency_score: 뉴스의 긴급도 점수
-    """
-    st.markdown("### 📊 뉴스 점수 분석 + 라이다 차트")
-    st.markdown("**목적**: 뉴스의 3가지 점수(impact_score, credibility_score, urgency_score)를 시각화")
-    
-    if news_df.empty:
-        st.info("📊 분석할 뉴스 데이터가 없습니다.")
-        return
-    
-    # 필요한 점수 컬럼 확인
-    required_columns = ["impact_score", "credibility_score", "urgency_score"]
-    missing_columns = [col for col in required_columns if col not in news_df.columns]
-    
-    if missing_columns:
-        st.warning(f"⚠️ 필요한 점수 컬럼이 없습니다: {', '.join(missing_columns)}")
-        st.info("💡 뉴스 데이터에 impact_score, credibility_score, urgency_score 컬럼이 있는지 확인해주세요.")
-        return
-    
-    # 뉴스 선택 UI
-    st.markdown("#### 📰 분석할 뉴스 선택")
-    
-    if "title" in news_df.columns:
-        # 제목으로 선택
-        if "news_id" in news_df.columns:
-            titles_with_id = [f"[{row['news_id']}] {row['title']}" if pd.notna(row['title']) else f"[{row['news_id']}] 제목 없음" 
-                             for _, row in news_df.iterrows()]
-        else:
-            titles_with_id = news_df["title"].fillna("제목 없음").tolist()
-        
-        selected_index = st.selectbox(
-            "뉴스 선택",
-            range(len(titles_with_id)),
-            format_func=lambda x: titles_with_id[x][:100] + "..." if len(titles_with_id[x]) > 100 else titles_with_id[x],
-            key="radar_news_selection"
-        )
-        
-        selected_news = news_df.iloc[selected_index].to_dict()
-    else:
-        st.warning("⚠️ 제목 컬럼이 없어 뉴스를 선택할 수 없습니다.")
-        return
-    
-    # 선택한 뉴스의 점수 가져오기
-    impact_score = float(selected_news.get("impact_score", 0)) if pd.notna(selected_news.get("impact_score")) else 0
-    credibility_score = float(selected_news.get("credibility_score", 0)) if pd.notna(selected_news.get("credibility_score")) else 0
-    urgency_score = float(selected_news.get("urgency_score", 0)) if pd.notna(selected_news.get("urgency_score")) else 0
-    
-    # 라이다 차트 생성
-    if go is not None:
-        st.markdown("#### 📈 선택한 뉴스 라이다 차트")
-        
-        # 라이다 차트 데이터 준비
-        categories = ["Impact Score", "Credibility Score", "Urgency Score"]
-        values = [impact_score, credibility_score, urgency_score]
-        
-        # 최대값 계산 (점수 범위가 0-100이 아닐 수 있으므로)
-        max_score = max(values) if values else 100
-        max_range = max(100, max_score * 1.2)  # 여유 공간을 위해 20% 추가
-        
-        # 라이다 차트 생성
-        fig = go.Figure()
-        
-        fig.add_trace(go.Scatterpolar(
-            r=values,
-            theta=categories,
-            fill='toself',
-            name='선택한 뉴스',
-            line_color='rgb(59, 130, 246)'  # 파란색
-        ))
-        
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, max_range]
-                )),
-            showlegend=True,
-            title="뉴스 점수 분석",
-            height=500
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 점수 상세 정보
-        st.markdown("##### 📋 상세 점수")
-        score_df = pd.DataFrame([
-            {"지표": "Impact Score", "점수": f"{impact_score:.1f}"},
-            {"지표": "Credibility Score", "점수": f"{credibility_score:.1f}"},
-            {"지표": "Urgency Score", "점수": f"{urgency_score:.1f}"},
-        ])
-        st.dataframe(score_df, use_container_width=True)
-        
-        # 최근 7일 평균 라이다 차트
-        st.markdown("#### 📊 최근 7일 기사 평균 라이다 차트")
-        
-        # 최근 7일 뉴스 필터링
-        if "published_at" in news_df.columns:
-            cutoff_date = datetime.now() - timedelta(days=7)
-            recent_news = news_df[
-                news_df["published_at"].notna() & 
-                (pd.to_datetime(news_df["published_at"]) >= cutoff_date)
-            ].copy()
-        else:
-            recent_news = news_df.copy()
-            st.info("⚠️ published_at 컬럼이 없어 전체 뉴스를 사용합니다.")
-        
-        if not recent_news.empty:
-            # 최근 7일 뉴스들의 점수 수집
-            impact_scores = []
-            credibility_scores = []
-            urgency_scores = []
-            
-            for idx, row in recent_news.iterrows():
-                impact = row.get("impact_score")
-                credibility = row.get("credibility_score")
-                urgency = row.get("urgency_score")
-                
-                if pd.notna(impact):
-                    impact_scores.append(float(impact))
-                if pd.notna(credibility):
-                    credibility_scores.append(float(credibility))
-                if pd.notna(urgency):
-                    urgency_scores.append(float(urgency))
-            
-            if impact_scores or credibility_scores or urgency_scores:
-                # 기술통계 계산 함수
-                def calc_stats(scores):
-                    """점수 리스트로부터 기술통계 계산"""
-                    if not scores:
-                        return {
-                            "평균": 0.0,
-                            "표준편차": 0.0,
-                            "최소값": 0.0,
-                            "최대값": 0.0,
-                            "중앙값": 0.0,
-                            "개수": 0
-                        }
-                    # numpy를 사용하여 기술통계 계산
-                    try:
-                        import numpy as np
-                        scores_array = np.array(scores)
-                        return {
-                            "평균": float(np.mean(scores_array)),
-                            "표준편차": float(np.std(scores_array)),
-                            "최소값": float(np.min(scores_array)),
-                            "최대값": float(np.max(scores_array)),
-                            "중앙값": float(np.median(scores_array)),
-                            "개수": len(scores)
-                        }
-                    except ImportError:
-                        # numpy가 없으면 기본 Python으로 계산
-                        n = len(scores)
-                        mean = sum(scores) / n
-                        variance = sum((x - mean) ** 2 for x in scores) / n
-                        std_dev = variance ** 0.5
-                        sorted_scores = sorted(scores)
-                        median = sorted_scores[n // 2] if n % 2 == 1 else (sorted_scores[n // 2 - 1] + sorted_scores[n // 2]) / 2
-                        return {
-                            "평균": float(mean),
-                            "표준편차": float(std_dev),
-                            "최소값": float(min(scores)),
-                            "최대값": float(max(scores)),
-                            "중앙값": float(median),
-                            "개수": n
-                        }
-                
-                # 각 점수별 기술통계 계산
-                impact_stats = calc_stats(impact_scores)
-                credibility_stats = calc_stats(credibility_scores)
-                urgency_stats = calc_stats(urgency_scores)
-                
-                # 평균값 (라이다 차트용)
-                avg_impact = impact_stats["평균"]
-                avg_credibility = credibility_stats["평균"]
-                avg_urgency = urgency_stats["평균"]
-                
-                avg_values = [avg_impact, avg_credibility, avg_urgency]
-                avg_max_range = max(100, max(avg_values) * 1.2) if avg_values else 100
-                
-                # 평균 라이다 차트 생성
-                avg_fig = go.Figure()
-                
-                avg_fig.add_trace(go.Scatterpolar(
-                    r=avg_values,
-                    theta=categories,
-                    fill='toself',
-                    name='최근 7일 평균',
-                    line_color='rgb(34, 197, 94)'  # 초록색
-                ))
-                
-                avg_fig.update_layout(
-                    polar=dict(
-                        radialaxis=dict(
-                            visible=True,
-                            range=[0, avg_max_range]
-                        )),
-                    showlegend=True,
-                    title="최근 7일 기사 평균 점수",
-                    height=500
-                )
-                
-                st.plotly_chart(avg_fig, use_container_width=True)
-                
-                # 기술통계 상세 정보
-                st.markdown("##### 📋 최근 7일 기술통계")
-                stats_df = pd.DataFrame([
-                    {
-                        "지표": "Impact Score",
-                        "평균": f"{impact_stats['평균']:.1f}",
-                        "표준편차": f"{impact_stats['표준편차']:.1f}",
-                        "최소값": f"{impact_stats['최소값']:.1f}",
-                        "최대값": f"{impact_stats['최대값']:.1f}",
-                        "중앙값": f"{impact_stats['중앙값']:.1f}",
-                        "개수": f"{impact_stats['개수']:,}건"
-                    },
-                    {
-                        "지표": "Credibility Score",
-                        "평균": f"{credibility_stats['평균']:.1f}",
-                        "표준편차": f"{credibility_stats['표준편차']:.1f}",
-                        "최소값": f"{credibility_stats['최소값']:.1f}",
-                        "최대값": f"{credibility_stats['최대값']:.1f}",
-                        "중앙값": f"{credibility_stats['중앙값']:.1f}",
-                        "개수": f"{credibility_stats['개수']:,}건"
-                    },
-                    {
-                        "지표": "Urgency Score",
-                        "평균": f"{urgency_stats['평균']:.1f}",
-                        "표준편차": f"{urgency_stats['표준편차']:.1f}",
-                        "최소값": f"{urgency_stats['최소값']:.1f}",
-                        "최대값": f"{urgency_stats['최대값']:.1f}",
-                        "중앙값": f"{urgency_stats['중앙값']:.1f}",
-                        "개수": f"{urgency_stats['개수']:,}건"
-                    },
-                ])
-                st.dataframe(stats_df, use_container_width=True)
-                st.caption(f"📊 분석 기사 수: {len(recent_news):,}건")
-            else:
-                st.info("📊 점수를 계산할 수 있는 뉴스가 없습니다.")
-        else:
-            st.info("📊 최근 7일간 수집된 뉴스가 없습니다.")
-    else:
-        st.warning("⚠️ Plotly가 설치되지 않아 라이다 차트를 표시할 수 없습니다.")
 
 def _calculate_news_scores(news: Dict[str, Any]) -> Dict[str, float]:
     """
@@ -2928,71 +2310,38 @@ def _render_url_parsing_quality_for_content(df_view: pd.DataFrame):
 
 def _render_user_behavior_tab(df_view: pd.DataFrame, session_column: str):
     """
-    🟢 사용자 행동 데이터 탭: "사용자가 우리가 만든 기능을 실제로 사용하고 있는가?"
-    
-    주요 분석 항목:
+    🟢 사용자 행동 데이터 탭: 핵심 지표만 표시
     - 뉴스 클릭률 (CTR)
-    - 기사 읽기 시간 (Dwell Time)
-    - 요약 클릭률
-    - 용어 클릭률 및 인기 용어 Top 10
-    - 자연어 검색 성공률
-    - 검색 → 클릭 전환률
-    - URL 입력 기능 사용률
-    - 챗봇 질문 타입 분포
-    - 재방문 세션 수
+    - 기사 읽기 시간 (Dwell Time, 평균)
+    - Glossary 사용률
+    - 질문(RAG) 사용률
+    - 용어 클릭률
+    - 뉴스 검색 사용률 / 검색 성공률 (간단 버전)
+    - 재방문 세션 비율 (간단)
     """
     st.markdown("### 🟢 사용자 행동 데이터 (User Behavior)")
-    st.markdown("**목표**: 사용자의 실제 행동 패턴 분석 - MVP 기능의 가치 여부 판단")
-    
-    # 주요 메트릭
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        news_clicks = int((df_view["event_name"] == "news_click").sum())
-        st.metric("뉴스 클릭", news_clicks)
-    with col2:
-        detail_opens = int((df_view["event_name"] == "news_detail_open").sum())
-        st.metric("상세 진입", detail_opens)
-        if news_clicks > 0:
-            ctr = (detail_opens / news_clicks) * 100
-            st.caption(f"진입률: {ctr:.1f}%")
-    with col3:
-        # Glossary 클릭과 챗봇 질문을 하나로 묶음 (둘 다 RAG 사용)
-        glossary_clicks = int((df_view["event_name"] == "glossary_click").sum())
-        chat_questions = int((df_view["event_name"] == "chat_question").sum())
-        rag_questions = glossary_clicks + chat_questions
-        st.metric("Glossary/질문 (RAG)", rag_questions)
-    with col4:
-        search_requests = int((df_view["event_name"] == "news_search_from_chat").sum())
-        st.metric("뉴스 검색", search_requests)
+    st.markdown("**목표**: 사용자의 핵심 행동 패턴을 한눈에 파악")
     
     # 1. 뉴스 클릭률 (CTR)
     _render_news_ctr(df_view)
     
-    # 2. 기사 상세 진입률 (위에 포함)
-    
-    # 3. 기사 읽기 시간(dwell time)
+    # 2. 기사 읽기 시간 (Dwell Time, 평균)
     _render_dwell_time(df_view)
     
-    # 4. 요약 클릭률
-    _render_summary_clicks(df_view)
+    # 3. Glossary 사용률
+    _render_glossary_usage_rate(df_view, session_column)
+    
+    # 4. 질문(RAG) 사용률
+    _render_rag_question_usage_rate(df_view, session_column)
     
     # 5. 용어 클릭률
     _render_term_clicks(df_view)
     
-    # 6. 자연어 검색 성공률
-    _render_search_success_rate(df_view)
+    # 6. 뉴스 검색 사용률 / 검색 성공률 (간단 버전)
+    _render_search_usage_simple(df_view, session_column)
     
-    # 7. 검색 → 클릭 전환률
-    _render_search_to_click_conversion(df_view)
-    
-    # 8. URL 입력 기능 사용률
-    _render_url_input_usage(df_view)
-    
-    # 9. 챗봇 질문 타입 분포
-    _render_chat_question_types(df_view)
-    
-    # 10. 재방문 세션 수
-    _render_returning_sessions(df_view, session_column)
+    # 7. 재방문 세션 비율 (간단)
+    _render_returning_sessions_simple(df_view, session_column)
 
 def _render_news_ctr(df_view: pd.DataFrame):
     """뉴스 클릭률 분석"""
@@ -3020,37 +2369,80 @@ def _render_news_ctr(df_view: pd.DataFrame):
                 st.plotly_chart(fig, use_container_width=True)
 
 def _render_dwell_time(df_view: pd.DataFrame):
-    """기사 읽기 시간 분석"""
-    view_duration_events = df_view[df_view["event_name"] == "view_duration"]
-    
-    if view_duration_events.empty:
-        return
-    
+    """기사 읽기 시간 분석 (평균만 표시)"""
     st.markdown("#### ⏱️ 기사 읽기 시간 (Dwell Time)")
     
     duration_data = []
+    
+    # 방법 1: view_duration 이벤트에서 duration_sec 추출
+    view_duration_events = df_view[df_view["event_name"] == "view_duration"]
     for idx, row in view_duration_events.iterrows():
         payload = _parse_payload(row.get("payload"))
         duration_sec = payload.get("duration_sec")
         if duration_sec is not None:
-            duration_data.append({
-                "event_time": row.get("event_time"),
-                "읽기 시간 (초)": duration_sec,
-            })
+            try:
+                duration_data.append(float(duration_sec))
+            except (ValueError, TypeError):
+                pass
+    
+    # 방법 2: news_detail_back 이벤트의 payload에서 duration_sec 추출 (실제 사용되는 방법)
+    detail_back_events = df_view[df_view["event_name"] == "news_detail_back"]
+    for idx, row in detail_back_events.iterrows():
+        payload = _parse_payload(row.get("payload"))
+        if payload:
+            duration_sec = payload.get("duration_sec")
+            if duration_sec is not None:
+                try:
+                    duration_data.append(float(duration_sec))
+                except (ValueError, TypeError):
+                    pass
+    
+    # 방법 3: news_detail_open 이벤트의 payload에서 duration_sec 추출 (혹시 있을 경우)
+    detail_open_events = df_view[df_view["event_name"] == "news_detail_open"]
+    for idx, row in detail_open_events.iterrows():
+        payload = _parse_payload(row.get("payload"))
+        if payload:
+            duration_sec = payload.get("duration_sec")
+            if duration_sec is not None:
+                try:
+                    duration_data.append(float(duration_sec))
+                except (ValueError, TypeError):
+                    pass
+    
+    # 방법 4: 세션 내에서 news_detail_open과 news_detail_back 간의 시간 차이 계산
+    if "session_id" in df_view.columns and "event_time" in df_view.columns:
+        for session_id in df_view["session_id"].dropna().unique():
+            session_events = df_view[df_view["session_id"] == session_id].sort_values("event_time")
+            detail_open_events = session_events[session_events["event_name"] == "news_detail_open"]
+            detail_back_events = session_events[session_events["event_name"] == "news_detail_back"]
+            
+            for open_idx in detail_open_events.index:
+                open_time = session_events.loc[open_idx, "event_time"]
+                open_news_id = session_events.loc[open_idx, "news_id"] if "news_id" in session_events.columns else None
+                
+                # 같은 news_id를 가진 news_detail_back 이벤트 찾기
+                after_open = session_events.loc[session_events.index > open_idx]
+                matching_back = after_open[
+                    (after_open["event_name"] == "news_detail_back") &
+                    (after_open["news_id"] == open_news_id if open_news_id else True)
+                ]
+                
+                if not matching_back.empty:
+                    back_time = matching_back.iloc[0]["event_time"]
+                    duration = (back_time - open_time).total_seconds()
+                    if duration > 0 and duration < 3600:  # 1시간 이내만 유효
+                        duration_data.append(duration)
     
     if duration_data:
-        duration_df = pd.DataFrame(duration_data)
-        avg_duration = duration_df["읽기 시간 (초)"].mean()
+        avg_duration = sum(duration_data) / len(duration_data)
         st.metric("평균 읽기 시간", f"{avg_duration:.1f}초")
-        
-        if px is not None and len(duration_df) > 0:
-            fig = px.histogram(
-                duration_df,
-                x="읽기 시간 (초)",
-                nbins=30,
-                title="기사 읽기 시간 분포"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"📊 분석된 읽기 시간 데이터: {len(duration_data)}건")
+    else:
+        st.info("📊 읽기 시간 데이터가 없습니다.")
+        st.caption("💡 읽기 시간은 다음 방법으로 계산됩니다:")
+        st.caption("   1. view_duration 이벤트의 duration_sec")
+        st.caption("   2. news_detail_back 이벤트의 payload duration_sec (주요 방법)")
+        st.caption("   3. news_detail_open과 news_detail_back 간의 시간 차이")
 
 def _render_summary_clicks(df_view: pd.DataFrame):
     """요약 클릭률 분석"""
@@ -3065,194 +2457,115 @@ def _render_summary_clicks(df_view: pd.DataFrame):
     st.metric("요약 클릭", summary_clicks)
 
 def _render_term_clicks(df_view: pd.DataFrame):
-    """용어 클릭률 분석 (Glossary 클릭과 RAG 챗봇 질문 통합)"""
-    # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
-    glossary_clicks = df_view[df_view["event_name"] == "glossary_click"]
-    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view)
-    rag_chat_questions = df_view[
-        (df_view["event_name"] == "chat_question") & 
-        (df_view["session_id"].isin(rag_chat_question_sessions))
-    ] if "session_id" in df_view.columns else pd.DataFrame()
-    rag_questions = pd.concat([glossary_clicks, rag_chat_questions], ignore_index=True) if not (glossary_clicks.empty and rag_chat_questions.empty) else pd.DataFrame()
+    """용어 클릭률"""
+    # Glossary 클릭만 집계 (용어 클릭률)
+    glossary_clicks = df_view[df_view["event_name"] == "glossary_click"].copy()
     
-    glossary_answers = df_view[df_view["event_name"] == "glossary_answer"]
-    chat_responses = df_view[df_view["event_name"] == "chat_response"]
-    rag_responses = pd.concat([glossary_answers, chat_responses], ignore_index=True) if not (glossary_answers.empty and chat_responses.empty) else pd.DataFrame()
-    
-    if rag_questions.empty and rag_responses.empty:
+    if glossary_clicks.empty:
+        st.markdown("#### 💡 용어 클릭률")
+        st.info("📊 Glossary 클릭 데이터가 없습니다.")
         return
     
-    st.markdown("#### 💡 Glossary/질문 (RAG) 사용률")
-    st.caption("**참고**: Glossary 클릭과 챗봇 질문은 모두 RAG를 사용하므로 하나로 묶어서 분석합니다.")
+    st.markdown("#### 💡 용어 클릭률")
+    
+    # 용어 클릭률 계산
+    total_news_clicks = len(df_view[df_view["event_name"] == "news_click"])
+    glossary_click_count = len(glossary_clicks)
+    term_ctr = (glossary_click_count / total_news_clicks * 100) if total_news_clicks > 0 else 0
     
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Glossary/질문 (RAG)", len(rag_questions))
+        st.metric("Glossary 클릭 수", glossary_click_count)
     with col2:
-        st.metric("응답/해설", len(rag_responses))
-    
-    # 인기 용어 Top 10 (Glossary 클릭과 챗봇 질문 모두 포함)
-    if not rag_questions.empty:
-        term_list = []
-        for idx, row in rag_questions.iterrows():
-            term = _get_term_from_row(row)
-            if term:
-                term_list.append(term)
-        
-        if term_list:
-            term_counts = pd.Series(term_list).value_counts().head(10)
-            if px is not None and len(term_counts) > 0:
-                fig = px.bar(
-                    x=term_counts.index,
-                    y=term_counts.values,
-                    title="인기 용어 Top 10",
-                    labels={"x": "용어", "y": "클릭 수"}
-                )
-                st.plotly_chart(fig, use_container_width=True)
+        st.metric("용어 클릭률", f"{term_ctr:.1f}%")
 
-def _render_search_success_rate(df_view: pd.DataFrame):
-    """자연어 검색 성공률"""
-    search_success = df_view[df_view["event_name"] == "news_search_from_chat"]
-    search_failed = df_view[df_view["event_name"] == "news_search_failed"]
-    
-    if search_success.empty and search_failed.empty:
-        return
-    
-    st.markdown("#### 🔍 자연어 검색 성공률")
-    
-    success_count = len(search_success)
-    failed_count = len(search_failed)
-    total_count = success_count + failed_count
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("검색 성공", success_count)
-    with col2:
-        st.metric("검색 실패", failed_count)
-    with col3:
-        if total_count > 0:
-            success_rate = (success_count / total_count) * 100
-            st.metric("성공률", f"{success_rate:.1f}%")
-        else:
-            st.metric("성공률", "N/A")
-
-def _render_search_to_click_conversion(df_view: pd.DataFrame):
-    """검색 → 클릭 전환률"""
-    search_events = df_view[df_view["event_name"] == "news_search_from_chat"]
-    selected_from_search = df_view[df_view["event_name"] == "news_selected_from_chat"]
-    
-    if search_events.empty:
-        return
-    
-    st.markdown("#### 🎯 검색 → 클릭 전환률")
-    
-    search_count = len(search_events)
-    selected_count = len(selected_from_search)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("검색 실행", search_count)
-    with col2:
-        st.metric("검색 결과 선택", selected_count)
-        if search_count > 0:
-            conversion_rate = (selected_count / search_count) * 100
-            st.caption(f"전환율: {conversion_rate:.1f}%")
-
-def _render_url_input_usage(df_view: pd.DataFrame):
-    """URL 입력 기능 사용률"""
-    url_added = df_view[df_view["event_name"] == "news_url_added_from_chat"]
-    
-    if url_added.empty:
-        return
-    
-    st.markdown("#### 🔗 URL 입력 기능 사용률")
-    
-    url_count = len(url_added)
-    total_sessions = df_view["session_id"].nunique() if "session_id" in df_view.columns else 0
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("URL로 추가된 기사", url_count)
-    with col2:
-        if total_sessions > 0:
-            usage_rate = (url_count / total_sessions) * 100
-            st.metric("세션당 사용률", f"{usage_rate:.1f}%")
-        else:
-            st.metric("세션당 사용률", "N/A")
-
-def _render_chat_question_types(df_view: pd.DataFrame):
-    """챗봇 질문 타입 분포 (Glossary 클릭과 챗봇 질문 통합)"""
-    chat_events = df_view[df_view["event_name"].isin([
-        "glossary_click", "chat_question", "glossary_answer", "chat_response", "news_search_from_chat", "news_url_added_from_chat"
-    ])]
-    
-    if chat_events.empty:
-        return
-    
-    st.markdown("#### 💬 Glossary/질문 (RAG) 타입 분포")
-    st.caption("**참고**: Glossary 클릭과 챗봇 질문은 모두 RAG를 사용하므로 하나로 묶어서 분석합니다.")
-    
-    # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
-    glossary_clicks = len(df_view[df_view["event_name"] == "glossary_click"])
-    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view)
-    rag_chat_questions = len(df_view[
-        (df_view["event_name"] == "chat_question") & 
-        (df_view["session_id"].isin(rag_chat_question_sessions))
-    ]) if "session_id" in df_view.columns else 0
-    rag_questions_total = glossary_clicks + rag_chat_questions
-    
-    question_types = {
-        "Glossary/질문 (RAG)": rag_questions_total,
-        "뉴스 검색": len(df_view[df_view["event_name"] == "news_search_from_chat"]),
-        "URL 입력": len(df_view[df_view["event_name"] == "news_url_added_from_chat"]),
-    }
-    
-    question_types = {k: v for k, v in question_types.items() if v > 0}
-    
-    if question_types:
-        type_df = pd.DataFrame(list(question_types.items()), columns=["타입", "건수"])
-        
-        if px is not None:
-            fig = px.pie(
-                type_df,
-                values="건수",
-                names="타입",
-                title="챗봇 질문 타입 분포"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        st.dataframe(type_df, use_container_width=True)
-
-def _render_returning_sessions(df_view: pd.DataFrame, session_column: str):
-    """재방문 세션 수"""
+def _render_glossary_usage_rate(df_view: pd.DataFrame, session_column: str):
+    """Glossary 사용률"""
     if session_column not in df_view.columns:
         return
     
-    st.markdown("#### 🔄 재방문 세션 분석")
+    st.markdown("#### 📚 Glossary 사용률")
+    
+    glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
+    total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 1
+    glossary_usage_count = len(glossary_sessions)
+    glossary_usage_rate = (glossary_usage_count / total_sessions * 100) if total_sessions > 0 else 0
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Glossary 사용 세션", glossary_usage_count)
+    with col2:
+        st.metric("Glossary 사용률", f"{glossary_usage_rate:.1f}%")
+
+def _render_rag_question_usage_rate(df_view: pd.DataFrame, session_column: str):
+    """질문(RAG) 사용률"""
+    if session_column not in df_view.columns:
+        return
+    
+    st.markdown("#### ❓ 질문(RAG) 사용률")
+    
+    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
+    total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 1
+    question_usage_count = len(rag_chat_question_sessions)
+    question_usage_rate = (question_usage_count / total_sessions * 100) if total_sessions > 0 else 0
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("질문(RAG) 사용 세션", question_usage_count)
+    with col2:
+        st.metric("질문(RAG) 사용률", f"{question_usage_rate:.1f}%")
+
+def _render_search_usage_simple(df_view: pd.DataFrame, session_column: str):
+    """뉴스 검색 사용률 / 검색 성공률 (간단 버전)"""
+    if session_column not in df_view.columns:
+        return
+    
+    st.markdown("#### 🔍 뉴스 검색 사용률 / 검색 성공률")
+    
+    # 검색 사용 세션
+    search_sessions = set(df_view[df_view["event_name"] == "news_search_from_chat"][session_column].dropna().unique())
+    total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 1
+    search_usage_count = len(search_sessions)
+    search_usage_rate = (search_usage_count / total_sessions * 100) if total_sessions > 0 else 0
+    
+    # 검색 성공률
+    search_success = df_view[df_view["event_name"] == "news_search_from_chat"]
+    search_failed = df_view[df_view["event_name"] == "news_search_failed"]
+    success_count = len(search_success)
+    failed_count = len(search_failed)
+    total_search_attempts = success_count + failed_count
+    success_rate = (success_count / total_search_attempts * 100) if total_search_attempts > 0 else 0
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("검색 사용 세션", search_usage_count)
+        st.caption(f"사용률: {search_usage_rate:.1f}%")
+    with col2:
+        st.metric("검색 성공", success_count)
+    with col3:
+        st.metric("검색 성공률", f"{success_rate:.1f}%")
+
+def _render_returning_sessions_simple(df_view: pd.DataFrame, session_column: str):
+    """재방문 세션 비율 (간단 버전)"""
+    if session_column not in df_view.columns or "user_id" not in df_view.columns:
+        return
+    
+    st.markdown("#### 🔄 재방문 세션 비율")
     
     user_sessions = df_view.groupby("user_id")[session_column].nunique().reset_index()
     user_sessions.columns = ["user_id", "세션 수"]
     
     total_users = len(user_sessions)
     returning_users = len(user_sessions[user_sessions["세션 수"] > 1])
+    return_rate = (returning_users / total_users * 100) if total_users > 0 else 0
     
     col1, col2 = st.columns(2)
     with col1:
         st.metric("총 사용자", total_users)
     with col2:
         st.metric("재방문 사용자", returning_users)
-        if total_users > 0:
-            return_rate = (returning_users / total_users) * 100
-            st.caption(f"재방문률: {return_rate:.1f}%")
-    
-    if px is not None and len(user_sessions) > 0:
-        fig = px.histogram(
-            user_sessions,
-            x="세션 수",
-            nbins=20,
-            title="사용자별 세션 수 분포"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"재방문률: {return_rate:.1f}%")
+
 
 # ============================================================================
 # Log Viewer 탭
@@ -3466,137 +2779,80 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 1
     news_clicks_per_session = news_clicks / total_sessions if total_sessions > 0 else 0
     
-    # 4. Glossary/질문 (RAG) 사용 세션 비율 (Glossary 클릭과 RAG 챗봇 질문 통합)
+    # 4. Glossary 사용률 (Glossary 클릭만)
     glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique()) if session_column in df_view.columns else set()
-    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
-    rag_usage_sessions = glossary_sessions | rag_chat_question_sessions  # Glossary 또는 RAG 질문
-    rag_usage_count = len(rag_usage_sessions)
-    rag_usage_rate = (rag_usage_count / total_sessions * 100) if total_sessions > 0 else 0
+    glossary_usage_count = len(glossary_sessions)
+    glossary_usage_rate = (glossary_usage_count / total_sessions * 100) if total_sessions > 0 else 0
     
-    # 메트릭 카드 표시
-    col1, col2, col3 = st.columns(3)
+    # 5. 질문 사용률 (RAG 질문만)
+    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
+    question_usage_count = len(rag_chat_question_sessions)
+    question_usage_rate = (question_usage_count / total_sessions * 100) if total_sessions > 0 else 0
+    
+    # 6. 신규/재방문 비율
+    if "user_id" in df_view.columns and session_column in df_view.columns:
+        # 각 사용자의 첫 세션 찾기
+        user_first_sessions = {}
+        for idx, row in df_view.iterrows():
+            user_id = row.get("user_id")
+            session_id = row.get(session_column)
+            if user_id and session_id:
+                if user_id not in user_first_sessions:
+                    user_first_sessions[user_id] = session_id
+        
+        # 신규 사용자: 첫 세션이 현재 기간 내에 있는 사용자
+        new_users = set(user_first_sessions.keys())
+        new_user_sessions = set(user_first_sessions.values())
+        new_session_count = len(new_user_sessions & set(df_view[session_column].dropna().unique()))
+        
+        # 재방문 사용자: 첫 세션이 현재 기간 이전에 있는 사용자
+        returning_session_count = total_sessions - new_session_count
+        new_return_rate = (new_session_count / total_sessions * 100) if total_sessions > 0 else 0
+        returning_rate = (returning_session_count / total_sessions * 100) if total_sessions > 0 else 0
+    else:
+        new_session_count = 0
+        returning_session_count = 0
+        new_return_rate = 0
+        returning_rate = 0
+    
+    # 메트릭 카드 표시 (핵심 15개 지표 중 KPI/Usage 부분)
+    st.markdown("##### 🔵 KPI / Usage")
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("DAU", f"{dau}명")
         st.metric("WAU", f"{wau}명")
     with col2:
-        st.metric("평균 세션 길이", f"{avg_session_length:.1f}분")
-        st.metric("세션당 뉴스 클릭", f"{news_clicks_per_session:.1f}건")
+        st.metric("신규 세션", f"{new_session_count}개")
+        st.caption(f"신규 비율: {new_return_rate:.1f}%")
+        st.metric("재방문 세션", f"{returning_session_count}개")
+        st.caption(f"재방문 비율: {returning_rate:.1f}%")
     with col3:
-        st.metric("Glossary/질문 (RAG) 사용 세션", f"{rag_usage_rate:.1f}%")
+        st.metric("세션당 뉴스 클릭", f"{news_clicks_per_session:.1f}건")
+        st.metric("Glossary 사용률", f"{glossary_usage_rate:.1f}%")
+    with col4:
+        st.metric("질문 사용률", f"{question_usage_rate:.1f}%")
     
     st.markdown("---")
     
-    # ========== B. 이용 패턴 (Line Chart) ==========
-    st.markdown("#### 📈 이용 패턴 추이")
+    # ========== B. 시간대별 뉴스 클릭 추이 ==========
+    st.markdown("#### 📈 시간대별 뉴스 클릭 추이")
     
-    # 선택한 기간이 1일 이하면 시간별, 그 외에는 일자별로 표시
-    use_hourly = date_range_days is not None and date_range_days <= 1
-    
-    if "date" in df_view.columns and px is not None:
-        if use_hourly and "hour" in df_view.columns:
-            # 시간별 추이 (하루만 선택한 경우)
-            # 1. 시간별 뉴스 클릭 추이
-            hourly_news_clicks = df_view[df_view["event_name"] == "news_click"].groupby("hour").size().reset_index(name="클릭 수")
+    if "date" in df_view.columns and "hour" in df_view.columns and px is not None:
+        # 시간대별 뉴스 클릭 추이
+        hourly_news_clicks = df_view[df_view["event_name"] == "news_click"].groupby("hour").size().reset_index(name="클릭 수")
+        
+        if len(hourly_news_clicks) > 0:
+            hourly_news_clicks = hourly_news_clicks.sort_values("hour")
             
-            if len(hourly_news_clicks) > 0:
-                hourly_news_clicks = hourly_news_clicks.sort_values("hour")
-                
-                fig1 = px.line(
-                    hourly_news_clicks,
-                    x="hour",
-                    y="클릭 수",
-                    title="시간별 뉴스 클릭 추이",
-                    labels={"hour": "시간 (시)", "클릭 수": "클릭 수"}
-                )
-                fig1.update_xaxes(tickmode='linear', tick0=0, dtick=3, tickformat='%H시')
-                st.plotly_chart(fig1, use_container_width=True)
-                st.dataframe(hourly_news_clicks, use_container_width=True, height=200)
-            
-            # 2. 시간별 Glossary/질문 (RAG) 사용 세션 비율 추이
-            hourly_sessions = df_view.groupby("hour")[session_column].nunique().reset_index(name="전체 세션")
-            # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
-            glossary_hourly = df_view[df_view["event_name"] == "glossary_click"]
-            rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
-            rag_chat_hourly = df_view[
-                (df_view["event_name"] == "chat_question") & 
-                (df_view[session_column].isin(rag_chat_question_sessions))
-            ] if session_column in df_view.columns else pd.DataFrame()
-            rag_events_hourly = pd.concat([glossary_hourly, rag_chat_hourly], ignore_index=True) if not (glossary_hourly.empty and rag_chat_hourly.empty) else pd.DataFrame()
-            if len(rag_events_hourly) > 0:
-                hourly_rag_sessions = rag_events_hourly.groupby("hour")[session_column].nunique().reset_index(name="RAG 세션")
-                hourly_usage = hourly_sessions.merge(hourly_rag_sessions, on="hour", how="left")
-                hourly_usage["RAG 세션"] = hourly_usage["RAG 세션"].fillna(0)
-                hourly_usage["사용 비율 (%)"] = (hourly_usage["RAG 세션"] / hourly_usage["전체 세션"] * 100).fillna(0)
-                hourly_usage = hourly_usage.sort_values("hour")
-                
-                fig2 = px.line(
-                    hourly_usage,
-                    x="hour",
-                    y="사용 비율 (%)",
-                    title="시간별 Glossary/질문 (RAG) 사용 세션 비율 추이",
-                    labels={"hour": "시간 (시)", "사용 비율 (%)": "비율 (%)"}
-                )
-                fig2.update_xaxes(tickmode='linear', tick0=0, dtick=3, tickformat='%H시')
-                st.plotly_chart(fig2, use_container_width=True)
-                st.dataframe(hourly_usage[["hour", "전체 세션", "RAG 세션", "사용 비율 (%)"]], use_container_width=True, height=200)
-        else:
-            # 일자별 추이 (여러 날짜 선택한 경우)
-            # 1. 일자별 뉴스 클릭 추이
-            daily_news_clicks = df_view[df_view["event_name"] == "news_click"].groupby("date").size().reset_index(name="클릭 수")
-            
-            if len(daily_news_clicks) > 0:
-                # 날짜를 datetime으로 변환 (시간 정보 제거)
-                daily_news_clicks["date_dt"] = pd.to_datetime(daily_news_clicks["date"])
-                daily_news_clicks = daily_news_clicks.sort_values("date_dt")
-                
-                fig1 = px.line(
-                    daily_news_clicks,
-                    x="date_dt",
-                    y="클릭 수",
-                    title="일자별 뉴스 클릭 추이",
-                    labels={"date_dt": "날짜", "클릭 수": "클릭 수"}
-                )
-                # X축 포맷을 날짜만 표시하도록 설정
-                fig1.update_xaxes(tickformat='%Y-%m-%d', dtick="D1")
-                st.plotly_chart(fig1, use_container_width=True)
-                # 날짜를 문자열로 변환하여 표시
-                display_df1 = daily_news_clicks.copy()
-                display_df1["날짜"] = display_df1["date"].astype(str)
-                st.dataframe(display_df1[["날짜", "클릭 수"]], use_container_width=True, height=200)
-            
-            # 2. 일자별 Glossary/질문 (RAG) 사용 세션 비율 추이
-            daily_sessions = df_view.groupby("date")[session_column].nunique().reset_index(name="전체 세션")
-            # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
-            glossary_daily = df_view[df_view["event_name"] == "glossary_click"]
-            rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
-            rag_chat_daily = df_view[
-                (df_view["event_name"] == "chat_question") & 
-                (df_view[session_column].isin(rag_chat_question_sessions))
-            ] if session_column in df_view.columns else pd.DataFrame()
-            rag_events_daily = pd.concat([glossary_daily, rag_chat_daily], ignore_index=True) if not (glossary_daily.empty and rag_chat_daily.empty) else pd.DataFrame()
-            if len(rag_events_daily) > 0:
-                daily_rag_sessions = rag_events_daily.groupby("date")[session_column].nunique().reset_index(name="RAG 세션")
-                daily_usage = daily_sessions.merge(daily_rag_sessions, on="date", how="left")
-                daily_usage["RAG 세션"] = daily_usage["RAG 세션"].fillna(0)
-                daily_usage["사용 비율 (%)"] = (daily_usage["RAG 세션"] / daily_usage["전체 세션"] * 100).fillna(0)
-                # 날짜를 datetime으로 변환 (시간 정보 제거)
-                daily_usage["date_dt"] = pd.to_datetime(daily_usage["date"])
-                daily_usage = daily_usage.sort_values("date_dt")
-                
-                fig2 = px.line(
-                    daily_usage,
-                    x="date_dt",
-                    y="사용 비율 (%)",
-                    title="일자별 Glossary/질문 (RAG) 사용 세션 비율 추이",
-                    labels={"date_dt": "날짜", "사용 비율 (%)": "비율 (%)"}
-                )
-                # X축 포맷을 날짜만 표시하도록 설정
-                fig2.update_xaxes(tickformat='%Y-%m-%d', dtick="D1")
-                st.plotly_chart(fig2, use_container_width=True)
-                # 날짜를 문자열로 변환하여 표시
-                display_df2 = daily_usage.copy()
-                display_df2["날짜"] = display_df2["date"].astype(str)
-                st.dataframe(display_df2[["날짜", "전체 세션", "RAG 세션", "사용 비율 (%)"]], use_container_width=True, height=200)
+            fig1 = px.line(
+                hourly_news_clicks,
+                x="hour",
+                y="클릭 수",
+                title="시간대별 뉴스 클릭 추이",
+                labels={"hour": "시간 (시)", "클릭 수": "클릭 수"}
+            )
+            fig1.update_xaxes(tickmode='linear', tick0=0, dtick=3, tickformat='%H시')
+            st.plotly_chart(fig1, use_container_width=True)
     
     st.markdown("---")
     
@@ -3925,156 +3181,6 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
             )
             st.plotly_chart(fig3, use_container_width=True)
     
-    st.markdown("---")
-    
-    # ========== D. 용어별 인기 분석 (Bar Chart) ==========
-    st.markdown("#### 📊 용어별 인기 분석")
-    
-    glossary_clicks = df_view[df_view["event_name"] == "glossary_click"].copy()
-    
-    if len(glossary_clicks) > 0:
-        # term 추출
-        terms_list = []
-        for idx, row in glossary_clicks.iterrows():
-            term = _get_term_from_row(row)
-            if term:
-                terms_list.append(term)
-        
-        if terms_list:
-            term_counts = pd.Series(terms_list).value_counts().head(10)
-            term_df = pd.DataFrame({
-                "용어": term_counts.index,
-                "클릭 수": term_counts.values
-            })
-            
-            if px is not None:
-                fig4 = px.bar(
-                    term_df,
-                    x="클릭 수",
-                    y="용어",
-                    orientation='h',
-                    title="Top 10 Glossary 용어",
-                    labels={"클릭 수": "클릭 수", "용어": "용어"}
-                )
-                st.plotly_chart(fig4, use_container_width=True)
-            
-            st.dataframe(term_df, use_container_width=True, height=300)
-    
-    st.markdown("---")
-    
-    # ========== E. 성능 분석 ==========
-    st.markdown("#### ⚡ 성능 분석")
-    
-    # 하이라이트 latency 데이터 추출 (캐시 히트/미스 구분)
-    # Content Quality 탭의 성능 분석에서 사용
-    detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
-    highlight_latencies_cache_miss = []  # 캐시 미스만 (실제 성능 문제 파악용)
-    highlight_latencies_cache_hit = []   # 캐시 히트만 (참고용)
-    highlight_latencies = []  # 전체 (fallback용 - 캐시 정보가 없을 때)
-    
-    for idx, row in detail_events.iterrows():
-        perf_data = _extract_perf_data(row)
-        if perf_data and isinstance(perf_data, dict):
-            highlight_ms = perf_data.get("highlight_ms")
-            cache_hit = perf_data.get("highlight_cache_hit", False)
-            
-            if highlight_ms is not None:
-                try:
-                    highlight_value = float(highlight_ms)
-                    # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
-                    if highlight_value > 0 and highlight_value < 100000:  # 100초 이상은 제외
-                        highlight_latencies.append(highlight_value)
-                        # 캐시 히트/미스 구분
-                        if cache_hit:
-                            highlight_latencies_cache_hit.append(highlight_value)
-                        else:
-                            highlight_latencies_cache_miss.append(highlight_value)
-                except (ValueError, TypeError):
-                    pass
-    
-    # 1. 하이라이트 latency 히스토그램 (캐시 히트/미스 구분)
-    # 캐시 미스만 표시 (실제 성능 문제 파악용)
-    if highlight_latencies_cache_miss and px is not None:
-        fig5 = px.histogram(
-            x=highlight_latencies_cache_miss,
-            nbins=30,
-            title="하이라이트 Latency 분포 (캐시 미스만)",
-            labels={"x": "Latency (ms)", "count": "빈도"}
-        )
-        # 경고 영역 표시 (2초 이상)
-        fig5.add_vline(x=2000, line_dash="dash", line_color="red", annotation_text="경고 영역 (2초)")
-        st.plotly_chart(fig5, use_container_width=True)
-        
-        # 캐시 히트 분포도 별도로 표시 (참고용)
-        if highlight_latencies_cache_hit and len(highlight_latencies_cache_hit) > 0:
-            fig5b = px.histogram(
-                x=highlight_latencies_cache_hit,
-                nbins=30,
-                title="하이라이트 Latency 분포 (캐시 히트만, 참고용)",
-                labels={"x": "Latency (ms)", "count": "빈도"}
-            )
-            st.plotly_chart(fig5b, use_container_width=True)
-    elif highlight_latencies and px is not None:
-        # 캐시 정보가 없는 경우 전체 데이터 표시
-        fig5 = px.histogram(
-            x=highlight_latencies,
-            nbins=30,
-            title="하이라이트 Latency 분포",
-            labels={"x": "Latency (ms)", "count": "빈도"}
-        )
-        # 경고 영역 표시 (2초 이상)
-        fig5.add_vline(x=2000, line_dash="dash", line_color="red", annotation_text="경고 영역 (2초)")
-        st.plotly_chart(fig5, use_container_width=True)
-    
-    # 2. 일자별 평균 하이라이트 latency
-    if "date" in df_view.columns and highlight_latencies and len(detail_events) > 0:
-        detail_events_with_date = detail_events.copy()
-        if "date" not in detail_events_with_date.columns:
-            detail_events_with_date["date"] = pd.to_datetime(detail_events_with_date["event_time"]).dt.date
-        
-        daily_highlight_latencies = []
-        for date in detail_events_with_date["date"].unique():
-            daily_events = detail_events_with_date[detail_events_with_date["date"] == date]
-            daily_latencies = []
-            for idx, row in daily_events.iterrows():
-                perf_data = _extract_perf_data(row)
-                if perf_data and isinstance(perf_data, dict):
-                    highlight_ms = perf_data.get("highlight_ms")
-                    if highlight_ms is not None:
-                        try:
-                            daily_latencies.append(float(highlight_ms))
-                        except (ValueError, TypeError):
-                            pass
-            if daily_latencies:
-                daily_highlight_latencies.append({
-                    "date": date,
-                    "평균 Latency (ms)": sum(daily_latencies) / len(daily_latencies)
-                })
-        
-        if daily_highlight_latencies and px is not None:
-            daily_latency_df = pd.DataFrame(daily_highlight_latencies)
-            # 날짜를 datetime으로 변환 (시간 정보 제거)
-            daily_latency_df["date_dt"] = pd.to_datetime(daily_latency_df["date"])
-            daily_latency_df = daily_latency_df.sort_values("date_dt")
-            fig6 = px.line(
-                daily_latency_df,
-                x="date_dt",
-                y="평균 Latency (ms)",
-                title="일자별 평균 하이라이트 Latency",
-                labels={"date_dt": "날짜", "평균 Latency (ms)": "Latency (ms)"}
-            )
-            # X축 포맷을 날짜만 표시하도록 설정
-            fig6.update_xaxes(tickformat='%Y-%m-%d', dtick="D1")
-            st.plotly_chart(fig6, use_container_width=True)
-    
-    # 3. 챗봇 응답속도 Box plot
-    if chat_latencies and px is not None:
-        fig7 = px.box(
-            y=chat_latencies,
-            title="챗봇 응답속도 분포",
-            labels={"y": "Latency (ms)"}
-        )
-        st.plotly_chart(fig7, use_container_width=True)
 
 
 # ============================================================================
@@ -4164,10 +3270,6 @@ def _render_category_distribution_for_prompt(news_df: pd.DataFrame):
             fig_pie.update_layout(height=400)
             st.plotly_chart(fig_pie, use_container_width=True)
     
-    # 데이터 테이블 (비율 포함)
-    st.markdown("**카테고리별 상세 통계**")
-    st.dataframe(category_df, use_container_width=True, height=200)
-    
     # 균형도 경고
     if len(category_counts) > 0:
         max_ratio = category_df["비율 (%)"].max()
@@ -4176,20 +3278,15 @@ def _render_category_distribution_for_prompt(news_df: pd.DataFrame):
         elif max_ratio < 20 and len(category_counts) >= 4:
             st.info("✅ 카테고리 분포가 비교적 균형 잡혀 있습니다.")
 
-
 def _render_category_engagement_analysis(news_df: pd.DataFrame, event_logs_df: pd.DataFrame):
-    """
-    2️⃣ 카테고리별 사용자 참여도 분석 (체류시간 / Glossary 클릭률)
-    category vs. 실 체류시간 / glossary 클릭률
-    → "왜 특정 카테고리를 제외해야 하는지" 객관적 근거 제공
-    """
+    """카테고리별 사용자 참여도 분석 (체류시간 / Glossary 클릭률)"""
     if news_df.empty or event_logs_df.empty:
         return
     
     if "primary_category" not in news_df.columns:
         return
     
-    st.markdown("##### 2️⃣ 카테고리별 사용자 참여도 분석")
+    st.markdown("#### 📊 카테고리별 사용자 참여도 분석")
     
     # 뉴스 클릭 및 상세 열기 이벤트 추출
     news_clicks = event_logs_df[event_logs_df["event_name"] == "news_click"].copy()
@@ -4332,99 +3429,5 @@ def _render_category_engagement_analysis(news_df: pd.DataFrame, event_logs_df: p
     # 상세 통계 테이블
     st.markdown("**카테고리별 상세 참여 통계**")
     st.dataframe(stats_df, use_container_width=True, height=300)
-    
-    # 인사이트 제공
-    if len(stats_df) > 0:
-        min_dwell_category = stats_df.loc[stats_df["평균 체류시간 (초)"].idxmin(), "카테고리"]
-        min_dwell_time = stats_df["평균 체류시간 (초)"].min()
-        max_glossary_category = stats_df.loc[stats_df["Glossary 클릭률 (%)"].idxmax(), "카테고리"]
-        max_glossary_rate = stats_df["Glossary 클릭률 (%)"].max()
-        
-        st.info(f"💡 **인사이트**: '{min_dwell_category}' 카테고리는 평균 체류시간이 {min_dwell_time:.1f}초로 가장 짧습니다. "
-                f"'{max_glossary_category}' 카테고리는 Glossary 클릭률이 {max_glossary_rate:.1f}%로 가장 높습니다.")
-
-
-def _render_excluded_news_patterns(news_df: pd.DataFrame):
-    """
-    3️⃣ 제외 기사의 패턴 분석 (키워드 빈도)
-    short_term_price, sensational 기사에서 제목 키워드 top 20
-    → 프롬프트에 바로 들어가는 데이터 기반 기준 제공
-    """
-    if news_df.empty:
-        return
-    
-    if "primary_category" not in news_df.columns or "title" not in news_df.columns:
-        return
-    
-    st.markdown("##### 3️⃣ 제외 기사 패턴 분석 (프롬프트 개선용)")
-    
-    # 제외 대상 카테고리 정의
-    excluded_categories = ["short_term_price", "sensational", "speculation"]
-    
-    # 제외 대상 카테고리별 뉴스 필터링
-    excluded_news_by_category = {}
-    for category in excluded_categories:
-        excluded = news_df[
-            (news_df["primary_category"] == category) &
-            (news_df["title"].notna()) &
-            (news_df["title"] != "")
-        ]
-        if not excluded.empty:
-            excluded_news_by_category[category] = excluded
-    
-    if not excluded_news_by_category:
-        st.info("📊 제외 대상 카테고리 뉴스가 없습니다.")
-        return
-    
-    # 카테고리별 키워드 추출
-    for category, category_news in excluded_news_by_category.items():
-        st.markdown(f"**{category} 기사 키워드 TOP 20**")
-        
-        # 제목에서 키워드 추출
-        all_keywords = []
-        for idx, row in category_news.iterrows():
-            title = str(row.get("title", ""))
-            if title:
-                # 한국어 단어 추출
-                words = _extract_korean_words(title)
-                all_keywords.extend(words)
-        
-        if not all_keywords:
-            st.info(f"📊 {category} 카테고리에서 추출된 키워드가 없습니다.")
-            continue
-        
-        # 키워드 빈도 계산
-        keyword_counts = pd.Series(all_keywords).value_counts().head(20)
-        
-        keyword_df = pd.DataFrame({
-            "키워드": keyword_counts.index,
-            "등장 횟수": keyword_counts.values
-        })
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            # Bar 차트
-            if px is not None:
-                fig = px.bar(
-                    keyword_df,
-                    x="등장 횟수",
-                    y="키워드",
-                    orientation='h',
-                    title=f"{category} 기사 제목 키워드 TOP 20",
-                    labels={"키워드": "키워드", "등장 횟수": "등장 횟수"},
-                    text="등장 횟수"
-                )
-                fig.update_traces(texttemplate='%{text}', textposition='outside')
-                fig.update_layout(height=500, showlegend=False, yaxis={'categoryorder': 'total ascending'})
-                st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # 데이터 테이블
-            st.dataframe(keyword_df, use_container_width=True, height=500)
-        
-        # 프롬프트 개선 제안
-        top_keywords_str = ", ".join(keyword_df["키워드"].head(10).tolist())
-        st.caption(f"💡 **프롬프트 개선 제안**: '{top_keywords_str}' 등의 키워드가 포함된 기사는 제외 기준에 추가하세요.")
 
 
