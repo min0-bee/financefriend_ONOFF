@@ -92,3 +92,6 @@ highlighted = highlight_terms(text, article_id="123", use_context_filter=False)
 2. 문장 구조 분석 추가
 3. BERT 기반 분류 (선택적)
 
+
+
+

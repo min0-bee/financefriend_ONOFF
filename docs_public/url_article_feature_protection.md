@@ -85,3 +85,6 @@ def test_url_article_features():
 2. **return 문 필수**: URL/기사 처리 후 반드시 `return` 문이 있어야 합니다
 3. **성능 측정 종료**: URL/기사 처리 후 `profile.finish()`와 `tracker.finish_current_profile()` 호출 필수
 
+
+
+

@@ -313,3 +313,6 @@ def analyze_sentence_context(text: str, term: str, match_start: int, match_end: 
 
 Phase 1으로도 85-90%의 문제를 해결할 수 있으며, 필요시 Phase 2, 3을 추가로 적용할 수 있습니다.
 
+
+
+

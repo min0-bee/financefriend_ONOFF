@@ -350,3 +350,6 @@ if user_input.endswith("뭐야?") and len(user_input) < 10:
 - `core/utils.py`: `llm_chat` 함수
 - `docs_public/llm_response_generation_analysis.md`: 상세 분석
 
+
+
+

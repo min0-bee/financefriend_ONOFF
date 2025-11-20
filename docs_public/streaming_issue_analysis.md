@@ -74,3 +74,6 @@ for chunk in stream_gen:
 2. HTML 기반 렌더링과 호환
 3. 기존 구조 유지하면서 실시간 스트리밍 구현
 
+
+
+

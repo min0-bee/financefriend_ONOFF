@@ -1,11 +1,13 @@
 # Streamlit secrets (민감정보 보호)
 .streamlit/secrets.toml
+streamlit/.streamlit/secrets.toml
+**/.streamlit/secrets.toml
 # API keys, credentials, local env
 .env
 *.env
+**/.env.backup
 config_local.py
 secrets.json
-.streamlit/secrets.toml
 
 ui/__pycache__/**
 ui/components/__pycache__/**
@@ -23,3 +25,15 @@ docs/
 test_*.py
 *_test.py
 tests/
+
+# Virtual environments
+.venv-rag/
+venv-rag/
+system_design/venv311/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+df

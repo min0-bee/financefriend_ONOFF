@@ -72,3 +72,6 @@ explanation = full_response.strip() if full_response else None
 
 실시간 스트리밍은 Streamlit의 근본적인 제약으로 인해 구현이 어렵지만, 응답 시간을 단축하면 사용자 경험이 크게 개선될 것입니다.
 
+
+
+

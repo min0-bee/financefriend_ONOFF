@@ -108,3 +108,6 @@ is_financial = is_financial_context(text, "생산적금융", start, end)
 2. **동의어 처리**: 유의어 컬럼 활용
 3. **학습 기반 키워드**: 실제 사용 빈도 기반 키워드 선택
 
+
+
+

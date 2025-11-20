@@ -89,3 +89,6 @@ ChatPanel(terms, use_openai=USE_OPENAI, enable_optimization=enable_optimization)
 2. 캐싱 전략 고도화 (더 많은 케이스 캐싱)
 3. 추가 성능 최적화 (프롬프트 최적화, 모델 파라미터 조정)
 
+
+
+
