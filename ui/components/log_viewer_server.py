@@ -130,7 +130,7 @@ def _extract_perf_data(row: pd.Series) -> Optional[Dict[str, Any]]:
                 }
         
         return None
-    except:
+    except Exception:
         return None
 
 def _get_news_id_from_row(row: pd.Series) -> Optional[str]:
@@ -434,7 +434,7 @@ def render(show_mode: str = "dashboard"):
         show_mode: "dashboard" (대시보드) 또는 "log_viewer" (로그 뷰어)
     """
     from core.logger import _get_user_id
-
+    
     # Supabase에서 이벤트 로그 가져오기
     with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
         # WAU 계산을 위해 최근 7일 데이터를 충분히 가져와야 함
@@ -831,11 +831,9 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
     - 임팩트 점수 분포
     - 중복 기사 비율
     - 뉴스 수집량 추세
-    - 워드클라우드 (특정 날짜)
     - 기초 뉴스 지표 분석 + 라이다 차트
-    - 프롬프트 튜닝용 샘플 기사 상세 비교
     - 검색 결과 뉴스 인기 분석
-    - URL 파싱 품질image.png
+    - URL 파싱 품질
     """
     st.markdown("### 🟡 뉴스 콘텐츠 품질 데이터 (Content Quality)")
     st.markdown("**목표**: 뉴스 콘텐츠의 품질 측정 - 서비스의 핵심 자산")
@@ -897,17 +895,16 @@ def _render_content_quality_tab(df_view: pd.DataFrame):
             _render_duplicate_news_analysis(news_df)
             _render_news_collection_trends(news_df)
             
-            # 워드클라우드 (사용자 설정 가능)
+            # 의미 있는 분석 패널 (프롬프트 개선 및 초보자 적합도 검증)
             st.markdown("---")
-            _render_wordcloud(news_df)
+            st.markdown("### 📊 뉴스 카테고리 및 사용자 참여 분석")
+            _render_category_distribution_for_prompt(news_df)
+            _render_category_engagement_analysis(news_df, df_view)
+            _render_excluded_news_patterns(news_df)
             
             # 기초 뉴스 지표 분석 + 라이다 차트
             st.markdown("---")
             _render_news_radar_analysis(news_df)
-            
-            # 프롬프트 튜닝용 샘플 기사 상세 비교
-            st.markdown("---")
-            _render_prompt_tuning_comparison(news_df)
 
 def _render_news_source_analysis(df_view: pd.DataFrame):
     """뉴스 소스 분석 (DB 뉴스 vs 임시 뉴스)"""
@@ -1020,51 +1017,10 @@ def _render_news_source_distribution(news_df: pd.DataFrame):
             showlegend=False
         )
         st.plotly_chart(fig, use_container_width=True)
-
-def _render_financial_news_ratio(news_df: pd.DataFrame):
-    """금융/비금융 기사 비중"""
-    # is_finance_news 컬럼이 있으면 우선 사용
-    if "is_finance_news" in news_df.columns:
-        news_with_flag = news_df[news_df["is_finance_news"].notna()].copy()
-        
-        if not news_with_flag.empty:
-            financial_count = (news_with_flag["is_finance_news"] == True).sum()
-            non_financial_count = (news_with_flag["is_finance_news"] == False).sum()
-            total_count = len(news_with_flag)
-            
-            st.markdown("#### 💰 금융/비금융 기사 비중 (is_finance_news 컬럼 기준)")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("금융 기사", f"{financial_count:,}건")
-                if total_count > 0:
-                    financial_ratio = (financial_count / total_count) * 100
-                    st.caption(f"비율: {financial_ratio:.1f}%")
-            with col2:
-                st.metric("비금융 기사", f"{non_financial_count:,}건")
-                if total_count > 0:
-                    non_financial_ratio = (non_financial_count / total_count) * 100
-                    st.caption(f"비율: {non_financial_ratio:.1f}%")
-            with col3:
-                st.metric("총 뉴스 수", f"{total_count:,}건")
-            
-            if total_count > 0 and px is not None:
-                ratio_df = pd.DataFrame({
-                    "분류": ["금융 기사", "비금융 기사"],
-                    "건수": [financial_count, non_financial_count]
-                })
-                # Donut chart (hole 파라미터 사용)
-                fig = px.pie(
-                    ratio_df,
-                    values="건수",
-                    names="분류",
-                    title="금융/비금융 기사 비중",
-                    hole=0.4  # 도넛 차트로 만들기
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            return
     
-    # is_finance_news 컬럼이 없으면 키워드 기반 분석
+def _render_financial_news_ratio(news_df: pd.DataFrame):
+    """금융/비금융 기사 비중 (키워드 기반 분석)"""
+    # title 또는 content 컬럼이 없으면 분석 불가
     if "title" not in news_df.columns and "content" not in news_df.columns:
         return
     
@@ -1280,23 +1236,50 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
         # 문제가 있는 뉴스 상세 목록 (300자 미만)
         if total_issue > 0:
             st.markdown("##### ⚠️ 본문이 너무 짧은 뉴스 목록 (300자 미만)")
-            problem_news = pd.concat([missing_content, very_short_content, short_content]).drop_duplicates()
             
-            if not problem_news.empty:
-                problem_display_cols = []
-                if "news_id" in problem_news.columns:
-                    problem_display_cols.append("news_id")
-                elif "display_id" in problem_news.columns:
-                    problem_display_cols.append("display_id")
+            # 필요한 컬럼만 먼저 선택하여 리스트 타입 컬럼 문제 방지
+            base_cols = []
+            if "news_id" in news_df.columns:
+                base_cols.append("news_id")
+            elif "display_id" in news_df.columns:
+                base_cols.append("display_id")
+            base_cols.extend(["title", "url", "source"])
+            
+            # 각 DataFrame에서 필요한 컬럼만 선택
+            missing_selected = missing_content[base_cols].copy() if not missing_content.empty and all(col in missing_content.columns for col in base_cols) else pd.DataFrame()
+            very_short_selected = very_short_content[base_cols].copy() if not very_short_content.empty and all(col in very_short_content.columns for col in base_cols) else pd.DataFrame()
+            short_selected = short_content[base_cols].copy() if not short_content.empty and all(col in short_content.columns for col in base_cols) else pd.DataFrame()
+            
+            # 선택된 컬럼만 concat (리스트 타입 컬럼 제외)
+            problem_list = []
+            if not missing_selected.empty:
+                problem_list.append(missing_selected)
+            if not very_short_selected.empty:
+                problem_list.append(very_short_selected)
+            if not short_selected.empty:
+                problem_list.append(short_selected)
+            
+            if problem_list:
+                problem_news = pd.concat(problem_list)
+                # 인덱스 기준으로 중복 제거
+                problem_news = problem_news[~problem_news.index.duplicated(keep='first')]
                 
-                problem_display_cols.extend(["title", "url", "source"])
+                # content_length 계산
                 if content_col == "content":
-                    problem_news["content_length"] = problem_news[content_col].astype(str).str.len()
+                    # 원본 DataFrame에서 content_length 가져오기
+                    for idx in problem_news.index:
+                        if idx in news_df.index:
+                            if content_col in news_df.columns:
+                                problem_news.loc[idx, "content_length"] = len(str(news_df.loc[idx, content_col]))
                 else:
-                    problem_news["content_length"] = pd.to_numeric(problem_news[content_col], errors='coerce')
+                    for idx in problem_news.index:
+                        if idx in news_df.index:
+                            if content_col in news_df.columns:
+                                problem_news.loc[idx, "content_length"] = pd.to_numeric(news_df.loc[idx, content_col], errors='coerce')
                 
-                problem_display_cols.append("content_length")
+                problem_news["content_length"] = problem_news["content_length"].fillna(0)
                 
+                problem_display_cols = base_cols + ["content_length"]
                 available_problem_cols = [col for col in problem_display_cols if col in problem_news.columns]
                 problem_df = problem_news[available_problem_cols].copy()
                 
@@ -1322,6 +1305,8 @@ def _render_content_missing_analysis(news_df: pd.DataFrame):
                     problem_df = problem_df.sort_values("본문 길이 (자)", ascending=True)
                 
                 st.dataframe(problem_df, use_container_width=True, height=400)
+            else:
+                st.info("📊 문제가 있는 뉴스 데이터를 가져올 수 없습니다.")
 
 def _render_title_content_duplication(news_df: pd.DataFrame):
     """제목·본문 중복률"""
@@ -2116,140 +2101,6 @@ def _extract_korean_words(text: str) -> List[str]:
     
     return filtered_words
 
-def _render_wordcloud(news_df: pd.DataFrame):
-    """워드클라우드 생성"""
-    if not WORDCLOUD_AVAILABLE:
-        st.info("💡 워드클라우드를 사용하려면 `pip install wordcloud matplotlib`을 실행해주세요.")
-        return
-    
-    st.markdown("#### ☁️ 뉴스 키워드 워드클라우드")
-    
-    # 날짜 선택 UI
-    if "published_at" in news_df.columns:
-        news_with_date = news_df[news_df["published_at"].notna()].copy()
-        if not news_with_date.empty:
-            news_with_date["date"] = pd.to_datetime(news_with_date["published_at"]).dt.date
-            available_dates = sorted(news_with_date["date"].unique(), reverse=True)
-            
-            if len(available_dates) > 0:
-                # 기본값: 가장 최근 날짜
-                default_index = 0
-                selected_date = st.selectbox(
-                    "날짜 선택",
-                    options=available_dates,
-                    index=default_index,
-                    format_func=lambda x: x.strftime("%Y년 %m월 %d일") if hasattr(x, 'strftime') else str(x),
-                    key="wordcloud_date"
-                )
-                
-                # 선택한 날짜의 뉴스만 필터링
-                selected_news = news_with_date[
-                    news_with_date["date"] == selected_date
-                ].copy()
-                
-                if selected_news.empty:
-                    date_str = selected_date.strftime('%Y년 %m월 %d일') if hasattr(selected_date, 'strftime') else str(selected_date)
-                    st.info(f"📊 {date_str}에 수집된 뉴스가 없습니다.")
-                    return
-            else:
-                st.info("📊 날짜 정보가 있는 뉴스가 없습니다.")
-                return
-        else:
-            st.info("📊 날짜 정보가 있는 뉴스가 없습니다.")
-            return
-    else:
-        # published_at이 없으면 전체 뉴스 사용
-        selected_news = news_df.copy()
-        st.info("⚠️ published_at 컬럼이 없어 전체 뉴스를 사용합니다.")
-        selected_date = None
-    
-    if selected_news.empty:
-        st.info("📊 선택한 날짜에 수집된 뉴스가 없습니다.")
-        return
-    
-    recent_news = selected_news
-    
-    # title과 content 합치기
-    text_list = []
-    for idx, row in recent_news.iterrows():
-        title = str(row.get("title", "")).strip()
-        content = str(row.get("content", "")).strip()
-        
-        if title or content:
-            combined_text = f"{title} {content}"
-            text_list.append(combined_text)
-    
-    if not text_list:
-        st.info("📊 제목과 본문이 있는 뉴스가 없습니다.")
-        return
-    
-    # 전체 텍스트 합치기
-    all_text = " ".join(text_list)
-    
-    # 한국어 단어 추출
-    words = _extract_korean_words(all_text)
-    
-    if not words:
-        st.info("📊 추출된 한국어 단어가 없습니다.")
-        return
-    
-    # 단어 빈도수 계산
-    word_freq = {}
-    for word in words:
-        word_freq[word] = word_freq.get(word, 0) + 1
-    
-    if not word_freq:
-        st.info("📊 키워드 빈도수가 계산되지 않았습니다.")
-        return
-    
-    # 한글 폰트 경로 찾기
-    font_path = _get_korean_font_path()
-    
-    if not font_path:
-        st.warning("⚠️ 한글 폰트를 찾을 수 없습니다. 워드클라우드가 제대로 표시되지 않을 수 있습니다.")
-        st.info("💡 Windows: C:/Windows/Fonts/NanumGothic.ttf 경로를 확인해주세요.")
-    
-    # 워드클라우드 생성
-    try:
-        wordcloud_params = {
-            "width": 800,
-            "height": 400,
-            "background_color": "white",
-            "max_words": 100,
-            "relative_scaling": 0.5,
-            "colormap": "viridis"
-        }
-        
-        if font_path:
-            wordcloud_params["font_path"] = font_path
-        
-        wordcloud = WordCloud(**wordcloud_params).generate_from_frequencies(word_freq)
-        
-        # 이미지 표시
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.imshow(wordcloud, interpolation='bilinear')
-        ax.axis('off')
-        if selected_date:
-            date_str = selected_date.strftime('%Y년 %m월 %d일') if hasattr(selected_date, 'strftime') else str(selected_date)
-            title = f"{date_str} 뉴스 키워드 워드클라우드"
-        else:
-            title = "뉴스 키워드 워드클라우드"
-        ax.set_title(title, fontsize=16, pad=20)
-        
-        st.pyplot(fig)
-        plt.close(fig)
-        
-        # 상위 키워드 표시
-        top_keywords = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
-        if top_keywords:
-            st.markdown("##### 🔝 상위 키워드 Top 20")
-            keyword_df = pd.DataFrame(top_keywords, columns=["키워드", "빈도"])
-            st.dataframe(keyword_df, use_container_width=True, height=300)
-    
-    except Exception as e:
-        st.error(f"❌ 워드클라우드 생성 중 오류가 발생했습니다: {str(e)}")
-        st.info("💡 한글 폰트 경로를 확인하거나 wordcloud 라이브러리를 재설치해주세요.")
-
 def _render_news_radar_analysis(news_df: pd.DataFrame):
     """
     뉴스 점수 분석 + 라이다 차트
@@ -2839,8 +2690,8 @@ def _render_search_result_news_popularity(df_view: pd.DataFrame):
             # 전체 데이터는 expander로 숨김 처리 (필요시 펼쳐서 확인 가능)
             with st.expander("📋 전체 뉴스 클릭 데이터 보기", expanded=False):
                 st.dataframe(popularity_df, use_container_width=True, height=400)
-    else:
-        st.info("📊 검색 결과 데이터가 없습니다.")
+        else:
+            st.info("📊 검색 결과 데이터가 없습니다.")
 
 def _render_url_parsing_quality_for_content(df_view: pd.DataFrame):
     """콘텐츠 품질 탭용 URL 파싱 품질"""
@@ -2922,342 +2773,6 @@ def _render_url_parsing_quality_for_content(df_view: pd.DataFrame):
                 title="시간대별 URL 파싱 실패율 추이"
             )
             st.plotly_chart(fig, use_container_width=True)
-
-def _render_prompt_tuning_comparison(news_df: pd.DataFrame):
-    """프롬프트 튜닝용 샘플 기사 상세 비교 블록"""
-    st.markdown("### 4️⃣ 샘플 기사 상세 비교 (프롬프트 튜닝용)")
-    st.markdown("**목적**: 뉴스 원문 + LLM 요약 결과를 비교하여 프롬프트 개선 포인트 발견")
-    
-    if news_df.empty:
-        st.info("📊 비교할 뉴스 데이터가 없습니다.")
-        return
-    
-    # 필터링 UI
-    st.markdown("#### 🔍 기사 필터링")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        # 날짜 필터
-        if "published_at" in news_df.columns:
-            news_with_date = news_df[news_df["published_at"].notna()].copy()
-            if not news_with_date.empty:
-                min_date = news_with_date["published_at"].min().date()
-                max_date = news_with_date["published_at"].max().date()
-                date_range = st.date_input(
-                    "발행일 범위",
-                    value=(min_date, max_date),
-                    min_value=min_date,
-                    max_value=max_date,
-                    key="prompt_tuning_date_range"
-                )
-            else:
-                date_range = None
-        else:
-            date_range = None
-    
-    with col2:
-        # 언론사 필터
-        if "source" in news_df.columns:
-            sources = ["전체"] + sorted(news_df[news_df["source"].notna()]["source"].unique().tolist())
-            selected_source = st.selectbox("언론사", sources, key="prompt_tuning_source")
-        else:
-            selected_source = "전체"
-    
-    with col3:
-        # 본문 길이 필터
-        if "content" in news_df.columns:
-            news_with_content = news_df[news_df["content"].notna() & (news_df["content"] != "")].copy()
-            if not news_with_content.empty:
-                news_with_content["content_length"] = news_with_content["content"].astype(str).str.len()
-                min_len = int(news_with_content["content_length"].min())
-                max_len = int(news_with_content["content_length"].max())
-                length_range = st.slider(
-                    "본문 길이 (자)",
-                    min_value=min_len,
-                    max_value=max_len,
-                    value=(min_len, max_len),
-                    key="prompt_tuning_length"
-                )
-            else:
-                length_range = None
-        else:
-            length_range = None
-    
-    with col4:
-        # 금융/비금융 필터
-        if "is_finance_news" in news_df.columns:
-            category_options = ["전체", "금융", "비금융"]
-            selected_category = st.selectbox("카테고리", category_options, key="prompt_tuning_category")
-        else:
-            selected_category = "전체"
-    
-    # 필터링 적용
-    filtered_df = news_df.copy()
-    
-    # 날짜 필터
-    if date_range and len(date_range) == 2 and "published_at" in filtered_df.columns:
-        start_date, end_date = date_range
-        filtered_df = filtered_df[
-            (pd.to_datetime(filtered_df["published_at"]).dt.date >= start_date) &
-            (pd.to_datetime(filtered_df["published_at"]).dt.date <= end_date)
-        ]
-    
-    # 언론사 필터
-    if selected_source != "전체" and "source" in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df["source"] == selected_source]
-    
-    # 길이 필터
-    if length_range and "content" in filtered_df.columns:
-        filtered_df = filtered_df[
-            filtered_df["content"].notna() & (filtered_df["content"] != "")
-        ].copy()
-        filtered_df["content_length"] = filtered_df["content"].astype(str).str.len()
-        filtered_df = filtered_df[
-            (filtered_df["content_length"] >= length_range[0]) &
-            (filtered_df["content_length"] <= length_range[1])
-        ]
-    
-    # 카테고리 필터
-    if selected_category != "전체" and "is_finance_news" in filtered_df.columns:
-        if selected_category == "금융":
-            filtered_df = filtered_df[filtered_df["is_finance_news"] == True]
-        else:
-            filtered_df = filtered_df[filtered_df["is_finance_news"] == False]
-    
-    if filtered_df.empty:
-        st.warning("⚠️ 필터 조건에 맞는 기사가 없습니다.")
-        return
-    
-    st.info(f"📊 필터링된 기사: {len(filtered_df):,}건")
-    
-    # 요약 품질 통계 분석
-    st.markdown("---")
-    st.markdown("#### 📊 요약 품질 통계 분석")
-    
-    # 필터링된 기사들에 대해 체크리스트 실행
-    quality_stats = {
-        "제목 그대로 포함": 0,
-        "요약 과도하게 장황": 0,
-        "요약 너무 짧음": 0,
-        "금융 뉴스 숫자 누락": 0,
-        "본문 앞부분 복사": 0,
-        "품질 통과": 0,
-        "요약 없음": 0
-    }
-    
-    # 체크리스트 함수
-    def check_summary_quality(row, selected_category):
-        """기사별 요약 품질 체크"""
-        title = row.get("title", "")
-        content = row.get("content", "")
-        summary = row.get("summary", "")
-        
-        if not content or not summary or pd.isna(summary) or str(summary).strip() == "":
-            return "요약 없음"
-        
-        content_str = str(content)
-        summary_str = str(summary)
-        
-        # 1. 제목 그대로 복붙 여부
-        if title and str(title) in summary_str:
-            return "제목 그대로 포함"
-        
-        # 2. 본문 길이 대비 요약 길이
-        content_len = len(content_str)
-        summary_len = len(summary_str)
-        if content_len > 0:
-            summary_ratio = (summary_len / content_len) * 100
-            if content_len < 500 and summary_ratio > 50:
-                return "요약 과도하게 장황"
-            elif summary_ratio < 5:
-                return "요약 너무 짧음"
-        
-        # 3. 숫자/변화폭 포함 여부 (금융/정책 뉴스)
-        if selected_category == "금융":
-            numbers_in_content = len(re.findall(r'\d+[%원억만조]?', content_str))
-            numbers_in_summary = len(re.findall(r'\d+[%원억만조]?', summary_str))
-            if numbers_in_content > 0 and numbers_in_summary == 0:
-                return "금융 뉴스 숫자 누락"
-        
-        # 4. 본문 앞부분만 복사 여부
-        if content_str[:200] in summary_str:
-            return "본문 앞부분 복사"
-        
-        return "품질 통과"
-    
-    # 필터링된 모든 기사에 대해 체크리스트 실행
-    for idx, row in filtered_df.iterrows():
-        quality_result = check_summary_quality(row, selected_category)
-        if quality_result in quality_stats:
-            quality_stats[quality_result] += 1
-    
-    # 통계 표시
-    total_checked = sum(quality_stats.values())
-    if total_checked > 0:
-        # 파이 그래프용 데이터 준비
-        quality_items = []
-        quality_counts = []
-        
-        for key, count in quality_stats.items():
-            if count > 0:
-                quality_items.append(key)
-                quality_counts.append(count)
-        
-        if quality_items and px is not None:
-            quality_df = pd.DataFrame({
-                "항목": quality_items,
-                "건수": quality_counts
-            })
-            
-            # 파이 그래프 생성
-            fig = px.pie(
-                quality_df,
-                values="건수",
-                names="항목",
-                title="요약 품질 체크리스트 항목별 비율",
-                hole=0.4  # 도넛 차트
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # 통계 테이블
-        st.markdown("##### 📋 상세 통계")
-        stats_df = pd.DataFrame([
-            {"항목": key, "건수": count, "비율": f"{(count/total_checked*100):.1f}%"}
-            for key, count in quality_stats.items() if count > 0
-        ])
-        st.dataframe(stats_df, use_container_width=True)
-    else:
-        st.info("📊 요약이 있는 기사가 없습니다.")
-    
-    # 기사 선택 UI
-    st.markdown("---")
-    st.markdown("#### 📰 기사 선택")
-    
-    # 기사 선택을 위한 selectbox
-    if "title" in filtered_df.columns:
-        # 제목으로 선택
-        if "news_id" in filtered_df.columns:
-            titles_with_id = [f"[{row['news_id']}] {row['title']}" if pd.notna(row['title']) else f"[{row['news_id']}] 제목 없음" 
-                             for _, row in filtered_df.iterrows()]
-        else:
-            titles_with_id = filtered_df["title"].fillna("제목 없음").tolist()
-        
-        selected_index = st.selectbox(
-            "기사 선택",
-            range(len(titles_with_id)),
-            format_func=lambda x: titles_with_id[x][:100] + "..." if len(titles_with_id[x]) > 100 else titles_with_id[x],
-            key="prompt_tuning_selected_article"
-        )
-        
-        selected_article = filtered_df.iloc[selected_index].to_dict()
-    else:
-        st.warning("⚠️ 제목 컬럼이 없어 기사를 선택할 수 없습니다.")
-        return
-    
-    # 좌우 비교 화면
-    st.markdown("---")
-    st.markdown("#### 📊 원문 vs 요약 비교")
-    
-    col_left, col_right = st.columns(2)
-    
-    with col_left:
-        st.markdown("##### 📄 원문")
-        
-        # 제목
-        title = selected_article.get("title", "제목 없음")
-        st.markdown(f"**{title}**")
-        
-        # 메타 정보
-        meta_info = []
-        if "source" in selected_article and pd.notna(selected_article.get("source")):
-            meta_info.append(f"출처: {selected_article['source']}")
-        if "published_at" in selected_article and pd.notna(selected_article.get("published_at")):
-            pub_date = pd.to_datetime(selected_article["published_at"])
-            meta_info.append(f"날짜: {pub_date.strftime('%Y-%m-%d %H:%M')}")
-        if "content" in selected_article:
-            content_len = len(str(selected_article.get("content", "")))
-            meta_info.append(f"길이: {content_len:,}자")
-        
-        if meta_info:
-            st.caption(" | ".join(meta_info))
-        
-        # 본문
-        content = selected_article.get("content", "")
-        if content:
-            st.markdown("**본문:**")
-            st.text_area(
-                "본문 내용",
-                value=str(content),
-                height=400,
-                disabled=True,
-                key="original_content_display"
-            )
-        else:
-            st.warning("⚠️ 본문이 없습니다.")
-    
-    with col_right:
-        st.markdown("##### 🤖 LLM 요약 결과")
-        
-        # 요약 가져오기
-        summary = selected_article.get("summary", "")
-        
-        if summary and pd.notna(summary) and str(summary).strip():
-            st.markdown("**요약:**")
-            st.text_area(
-                "요약 내용",
-                value=str(summary),
-                height=400,
-                disabled=True,
-                key="summary_display"
-            )
-        else:
-            st.info("💡 요약이 없습니다. Supabase `summary` 컬럼을 확인하거나 on-demand 생성 기능을 구현해주세요.")
-            st.caption("(향후 on-demand 요약 생성 기능 추가 예정)")
-        
-        # 요약 품질 체크리스트
-        st.markdown("**🔍 프롬프트 개선 체크리스트:**")
-        
-        if content and summary:
-            content_str = str(content)
-            summary_str = str(summary)
-            
-            checks = []
-            
-            # 1. 제목 그대로 복붙 여부
-            if title and title in summary_str:
-                checks.append("⚠️ 제목이 요약에 그대로 포함됨 → 제목 재작성 규칙 강화 필요")
-            
-            # 2. 본문 길이 대비 요약 길이
-            content_len = len(content_str)
-            summary_len = len(summary_str)
-            if content_len > 0:
-                summary_ratio = (summary_len / content_len) * 100
-                if content_len < 500 and summary_ratio > 50:
-                    checks.append("⚠️ 짧은 기사인데 요약이 과도하게 장황함 → 단신은 해석 줄이기")
-                elif summary_ratio < 5:
-                    checks.append("⚠️ 요약이 너무 짧음 → 핵심 정보 포함 강화")
-            
-            # 3. 숫자/변화폭 포함 여부 (금융/정책 뉴스)
-            # selected_category가 "금융"이면 이미 금융 기사로 필터링된 상태
-            # is_finance_news 컬럼이 없어도 selected_category로 판단 가능
-            if selected_category == "금융":
-                numbers_in_content = len(re.findall(r'\d+[%원억만조]?', content_str))
-                numbers_in_summary = len(re.findall(r'\d+[%원억만조]?', summary_str))
-                if numbers_in_content > 0 and numbers_in_summary == 0:
-                    checks.append("⚠️ 금리/정책 뉴스인데 숫자/변화폭이 요약에 없음 → 숫자 필수 규칙 추가")
-            
-            # 4. 본문 앞부분만 복사 여부
-            if content_str[:200] in summary_str:
-                checks.append("⚠️ 본문 앞부분을 그대로 복사한 듯함 → 요약 재작성 강화")
-            
-            if checks:
-                for check in checks:
-                    st.warning(check)
-            else:
-                st.success("✅ 기본적인 품질 체크를 통과했습니다.")
-        else:
-            st.info("💡 원문과 요약을 비교하려면 둘 다 필요합니다.")
 
 # ============================================================================
 # 탭 3: 사용자 행동 데이터 (User Behavior)
@@ -4002,76 +3517,229 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     # ========== C. 행동 흐름 (Funnel Chart) ==========
     st.markdown("#### 🔽 행동 흐름 분석")
     
-    # 뉴스 → Glossary → 챗봇 전환 퍼널 (세션 기반, 순차적)
-    # 순차적 퍼널: 각 단계는 이전 단계를 수행한 세션 중에서만 계산
-    # 1단계: 뉴스 클릭한 세션 수
-    news_click_sessions = df_view[df_view["event_name"] == "news_click"][session_column].nunique() if session_column in df_view.columns else 0
+    # ========== 퍼널 1: 뉴스 이해 퍼널 (News Understanding Funnel) ==========
+    # 목적: 초보자가 뉴스를 얼마나 '이해'했는가 측정
+    # 추천 뉴스 노출 → 뉴스 클릭 → Glossary 클릭 → 질문 → 요약/해설 → 재탐색
+    st.markdown("##### 1️⃣ 뉴스 이해 퍼널 (News → Glossary → 질문 → 재탐색)")
+    st.caption("**목적**: 홈 화면에서 추천 뉴스를 본 사용자의 학습 흐름 분석")
+    
+    # 홈에서 뉴스 클릭한 세션 (검색이 아닌 직접 클릭)
+    # source가 "list" 또는 "home"인 news_click만 포함 (검색 결과에서 온 것은 제외)
+    home_news_clicks = df_view[
+        (df_view["event_name"] == "news_click") &
+        (df_view["source"].isin(["list", "home", ""]) | df_view["source"].isna())
+    ]
+    news_click_sessions = home_news_clicks[session_column].nunique() if session_column in home_news_clicks.columns and not home_news_clicks.empty else 0
     
     if news_click_sessions > 0:
-        # 각 이벤트별 세션 집합 생성 (교집합 계산을 위해 set 사용)
-        news_sessions = set(df_view[df_view["event_name"] == "news_click"][session_column].dropna().unique())
+        # 각 이벤트별 세션 집합 생성
+        news_sessions = set(home_news_clicks[session_column].dropna().unique())
         glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
-        chat_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
+        chat_question_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
+        chat_response_sessions = set(df_view[df_view["event_name"] == "chat_response"][session_column].dropna().unique())
         
-        # 2단계: 뉴스 클릭한 세션 중에서 Glossary도 클릭한 세션 수 (순차적)
-        # 교집합(&)을 사용하여 두 이벤트를 모두 수행한 세션만 계산
-        glossary_after_news_sessions = len(news_sessions & glossary_sessions)  # 교집합
+        # 순차적 전환 계산
+        # 2단계: 뉴스 클릭 → Glossary 클릭
+        glossary_after_news = len(news_sessions & glossary_sessions)
         
-        # 3단계: 뉴스 클릭 AND Glossary 클릭한 세션 중에서 챗봇도 질문한 세션 수 (순차적)
-        # 즉, 뉴스 → Glossary → 챗봇 순서로 모두 수행한 세션 수
-        news_and_glossary_sessions = news_sessions & glossary_sessions
-        chat_after_glossary_sessions = len(news_and_glossary_sessions & chat_sessions)  # 3단계 모두 수행한 세션
+        # 3단계: Glossary 클릭 → 질문
+        glossary_and_news = news_sessions & glossary_sessions
+        question_after_glossary = len(glossary_and_news & chat_question_sessions)
         
-        # 전환율 계산 (이전 단계 대비)
-        glossary_rate = (glossary_after_news_sessions / news_click_sessions * 100) if news_click_sessions > 0 else 0
-        chat_rate = (chat_after_glossary_sessions / glossary_after_news_sessions * 100) if glossary_after_news_sessions > 0 else 0
+        # 4단계: 질문 → 응답 (요약/해설)
+        question_sessions = glossary_and_news & chat_question_sessions
+        response_after_question = len(question_sessions & chat_response_sessions)
         
-        funnel_data = pd.DataFrame({
-            "단계": ["뉴스 클릭", "Glossary 클릭", "챗봇 질문"],
-            "세션 수": [news_click_sessions, glossary_after_news_sessions, chat_after_glossary_sessions],
-            "전환율 (%)": [100.0, glossary_rate, chat_rate]
+        # 5단계: 재탐색 (같은 세션에서 다른 뉴스 클릭 또는 검색)
+        # 응답 후 다시 뉴스 클릭하거나 검색한 세션
+        re_explore_sessions = set()
+        for session_id in question_sessions & chat_response_sessions:
+            session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+            # 응답 이벤트 이후에 뉴스 클릭이나 검색이 있는지 확인
+            response_indices = session_events[session_events["event_name"] == "chat_response"].index
+            if len(response_indices) > 0:
+                last_response_idx = response_indices[-1]
+                after_response = session_events.loc[session_events.index > last_response_idx]
+                if len(after_response) > 0:
+                    has_re_explore = (
+                        (after_response["event_name"] == "news_click").any() or
+                        (after_response["event_name"] == "news_search_from_chat").any()
+                    )
+                    if has_re_explore:
+                        re_explore_sessions.add(session_id)
+        re_explore_count = len(re_explore_sessions)
+        
+        # 전환율 계산
+        glossary_rate = (glossary_after_news / news_click_sessions * 100) if news_click_sessions > 0 else 0
+        question_rate = (question_after_glossary / glossary_after_news * 100) if glossary_after_news > 0 else 0
+        response_rate = (response_after_question / question_after_glossary * 100) if question_after_glossary > 0 else 0
+        re_explore_rate = (re_explore_count / response_after_question * 100) if response_after_question > 0 else 0
+        
+        funnel1_data = pd.DataFrame({
+            "단계": ["뉴스 클릭", "Glossary 클릭", "질문", "응답/해설", "재탐색"],
+            "세션 수": [news_click_sessions, glossary_after_news, question_after_glossary, response_after_question, re_explore_count],
+            "전환율 (%)": [100.0, glossary_rate, question_rate, response_rate, re_explore_rate]
         })
         
-        st.dataframe(funnel_data, use_container_width=True)
+        st.dataframe(funnel1_data, use_container_width=True)
         
         if px is not None:
-            fig3 = px.funnel(
-                funnel_data,
+            fig1 = px.funnel(
+                funnel1_data,
                 x="세션 수",
                 y="단계",
-                title="뉴스 → Glossary → 챗봇 전환 퍼널 (세션 기반, 순차적)"
+                title="뉴스 이해 퍼널 (홈 기반 학습 흐름)"
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig1, use_container_width=True)
+        
+        # 핵심 지표 강조
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Glossary 클릭률", f"{glossary_rate:.1f}%", 
+                     help="뉴스 난이도 판단 지표: 높을수록 어려운 뉴스")
+        with col2:
+            st.metric("질문 전환율", f"{question_rate:.1f}%",
+                     help="학습 전환 지표: 뉴스가 학습 의욕을 유발했는지")
+        with col3:
+            st.metric("재탐색율", f"{re_explore_rate:.1f}%",
+                     help="학습 루프 지표: 학습 후 추가 탐색으로 이어졌는지")
     
-    # 챗봇 검색 → 뉴스 클릭 전환 퍼널 (세션 기반)
-    # 1단계: 챗봇 검색 실행한 세션 수
+    # ========== 퍼널 2: 검색 기반 탐색 퍼널 (Search-based Exploration Funnel) ==========
+    # 목적: 검색-탐색 기능이 얼마나 도움이 되는지 측정
+    # 검색 입력 → 관련 뉴스 노출 → 뉴스 클릭 → Glossary 클릭 → 질문
+    st.markdown("---")
+    st.markdown("##### 2️⃣ 검색 기반 탐색 퍼널 (검색 → 뉴스 → Glossary → 질문)")
+    st.caption("**목적**: 챗봇 검색 기능의 효과성 및 검색 결과 품질 평가")
+    
+    # 1단계: 검색 입력한 세션
     search_sessions = df_view[df_view["event_name"] == "news_search_from_chat"][session_column].nunique() if session_column in df_view.columns else 0
     
     if search_sessions > 0:
-        # 2단계: 검색 실행한 세션 중에서 뉴스도 클릭한 세션 수
         search_session_set = set(df_view[df_view["event_name"] == "news_search_from_chat"][session_column].dropna().unique())
-        selected_session_set = set(df_view[df_view["event_name"] == "news_selected_from_chat"][session_column].dropna().unique())
-        selected_after_search_sessions = len(search_session_set & selected_session_set)  # 교집합
+        
+        # 2단계: 검색 결과에서 뉴스 클릭 (검색 후 뉴스 선택)
+        # source가 "chat"이고 news_click 또는 news_selected_from_chat
+        search_news_clicks = df_view[
+            (df_view["event_name"].isin(["news_click", "news_selected_from_chat"])) &
+            (df_view["source"] == "chat")
+        ]
+        search_news_sessions = set(search_news_clicks[session_column].dropna().unique())
+        news_after_search = len(search_session_set & search_news_sessions)
+        
+        # 3단계: 검색 결과 뉴스 클릭 → Glossary 클릭
+        search_glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
+        glossary_after_search_news = len((search_session_set & search_news_sessions) & search_glossary_sessions)
+        
+        # 4단계: Glossary 클릭 → 질문
+        search_chat_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
+        question_after_search_glossary = len(((search_session_set & search_news_sessions) & search_glossary_sessions) & search_chat_sessions)
         
         # 전환율 계산
-        selected_rate = (selected_after_search_sessions / search_sessions * 100) if search_sessions > 0 else 0
+        news_rate = (news_after_search / search_sessions * 100) if search_sessions > 0 else 0
+        glossary_rate_search = (glossary_after_search_news / news_after_search * 100) if news_after_search > 0 else 0
+        question_rate_search = (question_after_search_glossary / glossary_after_search_news * 100) if glossary_after_search_news > 0 else 0
         
-        chat_funnel_data = pd.DataFrame({
-            "단계": ["챗봇 검색 실행", "검색 결과 뉴스 클릭"],
-            "세션 수": [search_sessions, selected_after_search_sessions],
-            "전환율 (%)": [100.0, selected_rate]
+        funnel2_data = pd.DataFrame({
+            "단계": ["검색 입력", "뉴스 클릭", "Glossary 클릭", "질문"],
+            "세션 수": [search_sessions, news_after_search, glossary_after_search_news, question_after_search_glossary],
+            "전환율 (%)": [100.0, news_rate, glossary_rate_search, question_rate_search]
         })
         
-        st.dataframe(chat_funnel_data, use_container_width=True)
+        st.dataframe(funnel2_data, use_container_width=True)
         
         if px is not None:
-            fig3b = px.funnel(
-                chat_funnel_data,
+            fig2 = px.funnel(
+                funnel2_data,
                 x="세션 수",
                 y="단계",
-                title="챗봇 검색 → 뉴스 클릭 전환 퍼널 (세션 기반)"
+                title="검색 기반 탐색 퍼널 (챗봇 검색 흐름)"
             )
-            st.plotly_chart(fig3b, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True)
+        
+        # 핵심 지표 강조
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("검색 → 뉴스 클릭률 (CNCR)", f"{news_rate:.1f}%",
+                     help="검색 품질 평가 핵심 지표: 검색 결과가 사용자 의도에 맞는가?")
+        with col2:
+            st.metric("검색 뉴스 Glossary 클릭률", f"{glossary_rate_search:.1f}%",
+                     help="검색된 뉴스의 초보자 난이도 평가")
+    
+    # ========== 퍼널 3: 전체 학습 여정 퍼널 (Overall Learning Journey) ==========
+    # 목적: 전체 서비스 사용 흐름 분석
+    # 진입 → 뉴스/검색 중 선택 → 뉴스 탐색 → Glossary → 질문 → 재탐색
+    st.markdown("---")
+    st.markdown("##### 3️⃣ 전체 학습 여정 퍼널 (Overall Learning Journey)")
+    st.caption("**목적**: 전체 서비스 사용 흐름 및 학습 여정 분석")
+    
+    # 전체 세션 수
+    total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 0
+    
+    if total_sessions > 0:
+        all_sessions = set(df_view[session_column].dropna().unique())
+        
+        # 1단계: 진입 (세션 시작)
+        entry_sessions = total_sessions
+        
+        # 2단계: 뉴스 또는 검색 중 선택
+        news_or_search_sessions = set()
+        news_sessions_all = set(df_view[df_view["event_name"] == "news_click"][session_column].dropna().unique())
+        search_sessions_all = set(df_view[df_view["event_name"] == "news_search_from_chat"][session_column].dropna().unique())
+        news_or_search_sessions = news_sessions_all | search_sessions_all
+        selected_path_count = len(news_or_search_sessions)
+        
+        # 3단계: 뉴스 탐색 (뉴스 클릭 또는 상세 열기)
+        news_explore_sessions = set(df_view[df_view["event_name"].isin(["news_click", "news_detail_open"])][session_column].dropna().unique())
+        news_explore_count = len(news_explore_sessions & news_or_search_sessions)
+        
+        # 4단계: Glossary 클릭
+        glossary_all_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
+        glossary_count = len(glossary_all_sessions & news_explore_sessions)
+        
+        # 5단계: 질문
+        question_all_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
+        question_count = len(question_all_sessions & glossary_all_sessions)
+        
+        # 6단계: 재탐색 (질문 후 다시 뉴스 클릭 또는 검색)
+        re_explore_all = set()
+        for session_id in question_all_sessions & glossary_all_sessions:
+            session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+            question_indices = session_events[session_events["event_name"] == "chat_question"].index
+            if len(question_indices) > 0:
+                last_question_idx = question_indices[-1]
+                after_question = session_events.loc[session_events.index > last_question_idx]
+                if len(after_question) > 0:
+                    has_re_explore = (
+                        (after_question["event_name"] == "news_click").any() or
+                        (after_question["event_name"] == "news_search_from_chat").any()
+                    )
+                    if has_re_explore:
+                        re_explore_all.add(session_id)
+        re_explore_all_count = len(re_explore_all)
+        
+        # 전환율 계산
+        path_selection_rate = (selected_path_count / entry_sessions * 100) if entry_sessions > 0 else 0
+        news_explore_rate = (news_explore_count / selected_path_count * 100) if selected_path_count > 0 else 0
+        glossary_journey_rate = (glossary_count / news_explore_count * 100) if news_explore_count > 0 else 0
+        question_journey_rate = (question_count / glossary_count * 100) if glossary_count > 0 else 0
+        re_explore_journey_rate = (re_explore_all_count / question_count * 100) if question_count > 0 else 0
+        
+        funnel3_data = pd.DataFrame({
+            "단계": ["진입", "뉴스/검색 선택", "뉴스 탐색", "Glossary", "질문", "재탐색"],
+            "세션 수": [entry_sessions, selected_path_count, news_explore_count, glossary_count, question_count, re_explore_all_count],
+            "전환율 (%)": [100.0, path_selection_rate, news_explore_rate, glossary_journey_rate, question_journey_rate, re_explore_journey_rate]
+        })
+        
+        st.dataframe(funnel3_data, use_container_width=True)
+        
+        if px is not None:
+            fig3 = px.funnel(
+                funnel3_data,
+                x="세션 수",
+                y="단계",
+                title="전체 학습 여정 퍼널 (Overall Learning Journey)"
+            )
+            st.plotly_chart(fig3, use_container_width=True)
     
     st.markdown("---")
     
@@ -4223,3 +3891,356 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
             labels={"y": "Latency (ms)"}
         )
         st.plotly_chart(fig7, use_container_width=True)
+
+
+# ============================================================================
+# 뉴스 카테고리 및 키워드 분석 패널 (5개)
+# ============================================================================
+
+def _render_category_distribution_for_prompt(news_df: pd.DataFrame):
+    """
+    1️⃣ 카테고리별 분포 (프롬프트 개선 검증용)
+    LLM 분류 결과가 균형 있게 나오는지 확인
+    basic_concept, macro_market, major_industry, investment_basic 등
+    """
+    if news_df.empty:
+        return
+    
+    if "primary_category" not in news_df.columns:
+        st.info("📊 primary_category 컬럼이 없습니다.")
+        return
+    
+    st.markdown("##### 1️⃣ 카테고리별 분포 (LLM 분류 결과 검증)")
+    
+    # primary_category가 NULL이 아닌 데이터만 필터링
+    valid_categories = news_df[news_df["primary_category"].notna() & (news_df["primary_category"] != "")]
+    
+    if valid_categories.empty:
+        st.info("📊 카테고리 데이터가 없습니다.")
+        return
+    
+    total_count = len(valid_categories)
+    
+    # 카테고리별 개수 집계
+    category_counts = valid_categories["primary_category"].value_counts()
+    
+    # 초보자 뉴스 카테고리 매핑 (프롬프트 개선 검증용)
+    beginner_categories = {
+        "basic_concept": "기초 개념",
+        "macro_market": "거시 시장",
+        "major_industry": "주요 산업",
+        "investment_basic": "투자 기초"
+    }
+    
+    # 기타 카테고리도 포함
+    all_categories = {}
+    for cat in category_counts.index:
+        if cat in beginner_categories:
+            all_categories[cat] = beginner_categories[cat]
+        else:
+            all_categories[cat] = cat
+    
+    # 카테고리별 건수 및 비율 계산
+    category_data = []
+    for cat, count in category_counts.items():
+        category_data.append({
+            "카테고리": all_categories.get(cat, cat),
+            "건수": count,
+            "비율 (%)": round((count / total_count) * 100, 1) if total_count > 0 else 0
+        })
+    
+    category_df = pd.DataFrame(category_data).sort_values("건수", ascending=False)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Bar 차트
+        if px is not None:
+            fig_bar = px.bar(
+                category_df,
+                x="카테고리",
+                y="건수",
+                title="카테고리별 수집 건수",
+                labels={"카테고리": "카테고리", "건수": "건수"},
+                text="건수"
+            )
+            fig_bar.update_traces(texttemplate='%{text}', textposition='outside')
+            fig_bar.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+    
+    with col2:
+        # Pie 차트
+        if px is not None:
+            fig_pie = px.pie(
+                category_df,
+                values="건수",
+                names="카테고리",
+                title="카테고리 분포 비율"
+            )
+            fig_pie.update_layout(height=400)
+            st.plotly_chart(fig_pie, use_container_width=True)
+    
+    # 데이터 테이블 (비율 포함)
+    st.markdown("**카테고리별 상세 통계**")
+    st.dataframe(category_df, use_container_width=True, height=200)
+    
+    # 균형도 경고
+    if len(category_counts) > 0:
+        max_ratio = category_df["비율 (%)"].max()
+        if max_ratio > 60:
+            st.warning(f"⚠️ 특정 카테고리가 {max_ratio:.1f}%로 편중되어 있습니다. LLM 분류 기준을 재검토하세요.")
+        elif max_ratio < 20 and len(category_counts) >= 4:
+            st.info("✅ 카테고리 분포가 비교적 균형 잡혀 있습니다.")
+
+
+def _render_category_engagement_analysis(news_df: pd.DataFrame, event_logs_df: pd.DataFrame):
+    """
+    2️⃣ 카테고리별 사용자 참여도 분석 (체류시간 / Glossary 클릭률)
+    category vs. 실 체류시간 / glossary 클릭률
+    → "왜 특정 카테고리를 제외해야 하는지" 객관적 근거 제공
+    """
+    if news_df.empty or event_logs_df.empty:
+        return
+    
+    if "primary_category" not in news_df.columns:
+        return
+    
+    st.markdown("##### 2️⃣ 카테고리별 사용자 참여도 분석")
+    
+    # 뉴스 클릭 및 상세 열기 이벤트 추출
+    news_clicks = event_logs_df[event_logs_df["event_name"] == "news_click"].copy()
+    detail_opens = event_logs_df[event_logs_df["event_name"] == "news_detail_open"].copy()
+    glossary_clicks = event_logs_df[event_logs_df["event_name"] == "glossary_click"].copy()
+    
+    if news_clicks.empty and detail_opens.empty:
+        st.info("📊 뉴스 클릭 데이터가 없습니다.")
+        return
+    
+    # news_id 추출 및 카테고리 매핑
+    def _get_news_id_from_row(row):
+        news_id = row.get("news_id")
+        if pd.notna(news_id) and news_id != "":
+            return str(news_id)
+        payload = _parse_payload(row.get("payload"))
+        if payload:
+            news_id = payload.get("news_id")
+            if news_id:
+                return str(news_id)
+        return None
+    
+    # 뉴스 ID별 카테고리 매핑
+    news_id_to_category = {}
+    for idx, row in news_df.iterrows():
+        news_id = str(row.get("news_id", ""))
+        category = row.get("primary_category")
+        if pd.notna(category) and category != "":
+            news_id_to_category[news_id] = category
+    
+    # 카테고리별 통계 수집
+    category_stats = {}
+    
+    # 뉴스 클릭 수
+    for idx, row in news_clicks.iterrows():
+        news_id = _get_news_id_from_row(row)
+        if news_id and news_id in news_id_to_category:
+            category = news_id_to_category[news_id]
+            if category not in category_stats:
+                category_stats[category] = {
+                    "clicks": 0,
+                    "detail_opens": 0,
+                    "glossary_clicks": 0,
+                    "dwell_times": []
+                }
+            category_stats[category]["clicks"] += 1
+    
+    # 상세 열기 수 및 체류시간 계산
+    for idx, row in detail_opens.iterrows():
+        news_id = _get_news_id_from_row(row)
+        if news_id and news_id in news_id_to_category:
+            category = news_id_to_category[news_id]
+            if category not in category_stats:
+                category_stats[category] = {
+                    "clicks": 0,
+                    "detail_opens": 0,
+                    "glossary_clicks": 0,
+                    "dwell_times": []
+                }
+            category_stats[category]["detail_opens"] += 1
+            
+            # 체류시간 계산 (payload에서 duration_sec 추출)
+            payload = _parse_payload(row.get("payload"))
+            if payload:
+                duration_sec = payload.get("duration_sec")
+                if duration_sec is not None:
+                    try:
+                        category_stats[category]["dwell_times"].append(float(duration_sec))
+                    except:
+                        pass
+    
+    # Glossary 클릭 수
+    for idx, row in glossary_clicks.iterrows():
+        news_id = _get_news_id_from_row(row)
+        if news_id and news_id in news_id_to_category:
+            category = news_id_to_category[news_id]
+            if category not in category_stats:
+                category_stats[category] = {
+                    "clicks": 0,
+                    "detail_opens": 0,
+                    "glossary_clicks": 0,
+                    "dwell_times": []
+                }
+            category_stats[category]["glossary_clicks"] += 1
+    
+    if not category_stats:
+        st.info("📊 카테고리별 참여 데이터가 없습니다.")
+        return
+    
+    # 통계 데이터프레임 생성
+    stats_data = []
+    for category, stats in category_stats.items():
+        avg_dwell = sum(stats["dwell_times"]) / len(stats["dwell_times"]) if stats["dwell_times"] else 0
+        glossary_rate = (stats["glossary_clicks"] / stats["clicks"] * 100) if stats["clicks"] > 0 else 0
+        
+        stats_data.append({
+            "카테고리": category,
+            "뉴스 클릭 수": stats["clicks"],
+            "상세 열기 수": stats["detail_opens"],
+            "평균 체류시간 (초)": round(avg_dwell, 1),
+            "Glossary 클릭 수": stats["glossary_clicks"],
+            "Glossary 클릭률 (%)": round(glossary_rate, 1)
+        })
+    
+    stats_df = pd.DataFrame(stats_data).sort_values("뉴스 클릭 수", ascending=False)
+    
+    # 시각화
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # 평균 체류시간 비교
+        if px is not None and len(stats_df) > 0:
+            fig_dwell = px.bar(
+                stats_df,
+                x="카테고리",
+                y="평균 체류시간 (초)",
+                title="카테고리별 평균 체류시간",
+                labels={"카테고리": "카테고리", "평균 체류시간 (초)": "체류시간 (초)"},
+                text="평균 체류시간 (초)"
+            )
+            fig_dwell.update_traces(texttemplate='%{text:.1f}초', textposition='outside')
+            fig_dwell.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig_dwell, use_container_width=True)
+    
+    with col2:
+        # Glossary 클릭률 비교
+        if px is not None and len(stats_df) > 0:
+            fig_glossary = px.bar(
+                stats_df,
+                x="카테고리",
+                y="Glossary 클릭률 (%)",
+                title="카테고리별 Glossary 클릭률",
+                labels={"카테고리": "카테고리", "Glossary 클릭률 (%)": "클릭률 (%)"},
+                text="Glossary 클릭률 (%)"
+            )
+            fig_glossary.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+            fig_glossary.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig_glossary, use_container_width=True)
+    
+    # 상세 통계 테이블
+    st.markdown("**카테고리별 상세 참여 통계**")
+    st.dataframe(stats_df, use_container_width=True, height=300)
+    
+    # 인사이트 제공
+    if len(stats_df) > 0:
+        min_dwell_category = stats_df.loc[stats_df["평균 체류시간 (초)"].idxmin(), "카테고리"]
+        min_dwell_time = stats_df["평균 체류시간 (초)"].min()
+        max_glossary_category = stats_df.loc[stats_df["Glossary 클릭률 (%)"].idxmax(), "카테고리"]
+        max_glossary_rate = stats_df["Glossary 클릭률 (%)"].max()
+        
+        st.info(f"💡 **인사이트**: '{min_dwell_category}' 카테고리는 평균 체류시간이 {min_dwell_time:.1f}초로 가장 짧습니다. "
+                f"'{max_glossary_category}' 카테고리는 Glossary 클릭률이 {max_glossary_rate:.1f}%로 가장 높습니다.")
+
+
+def _render_excluded_news_patterns(news_df: pd.DataFrame):
+    """
+    3️⃣ 제외 기사의 패턴 분석 (키워드 빈도)
+    short_term_price, sensational 기사에서 제목 키워드 top 20
+    → 프롬프트에 바로 들어가는 데이터 기반 기준 제공
+    """
+    if news_df.empty:
+        return
+    
+    if "primary_category" not in news_df.columns or "title" not in news_df.columns:
+        return
+    
+    st.markdown("##### 3️⃣ 제외 기사 패턴 분석 (프롬프트 개선용)")
+    
+    # 제외 대상 카테고리 정의
+    excluded_categories = ["short_term_price", "sensational", "speculation"]
+    
+    # 제외 대상 카테고리별 뉴스 필터링
+    excluded_news_by_category = {}
+    for category in excluded_categories:
+        excluded = news_df[
+            (news_df["primary_category"] == category) &
+            (news_df["title"].notna()) &
+            (news_df["title"] != "")
+        ]
+        if not excluded.empty:
+            excluded_news_by_category[category] = excluded
+    
+    if not excluded_news_by_category:
+        st.info("📊 제외 대상 카테고리 뉴스가 없습니다.")
+        return
+    
+    # 카테고리별 키워드 추출
+    for category, category_news in excluded_news_by_category.items():
+        st.markdown(f"**{category} 기사 키워드 TOP 20**")
+        
+        # 제목에서 키워드 추출
+        all_keywords = []
+        for idx, row in category_news.iterrows():
+            title = str(row.get("title", ""))
+            if title:
+                # 한국어 단어 추출
+                words = _extract_korean_words(title)
+                all_keywords.extend(words)
+        
+        if not all_keywords:
+            st.info(f"📊 {category} 카테고리에서 추출된 키워드가 없습니다.")
+            continue
+        
+        # 키워드 빈도 계산
+        keyword_counts = pd.Series(all_keywords).value_counts().head(20)
+        
+        keyword_df = pd.DataFrame({
+            "키워드": keyword_counts.index,
+            "등장 횟수": keyword_counts.values
+        })
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Bar 차트
+            if px is not None:
+                fig = px.bar(
+                    keyword_df,
+                    x="등장 횟수",
+                    y="키워드",
+                    orientation='h',
+                    title=f"{category} 기사 제목 키워드 TOP 20",
+                    labels={"키워드": "키워드", "등장 횟수": "등장 횟수"},
+                    text="등장 횟수"
+                )
+                fig.update_traces(texttemplate='%{text}', textposition='outside')
+                fig.update_layout(height=500, showlegend=False, yaxis={'categoryorder': 'total ascending'})
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # 데이터 테이블
+            st.dataframe(keyword_df, use_container_width=True, height=500)
+        
+        # 프롬프트 개선 제안
+        top_keywords_str = ", ".join(keyword_df["키워드"].head(10).tolist())
+        st.caption(f"💡 **프롬프트 개선 제안**: '{top_keywords_str}' 등의 키워드가 포함된 기사는 제외 기준에 추가하세요.")
+
+
