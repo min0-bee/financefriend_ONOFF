@@ -75,6 +75,50 @@ def _extract_from_payload(payload: Any, key: str, default=None):
     parsed = _parse_payload(payload)
     return parsed.get(key, default)
 
+def _get_rag_chat_question_sessions(df_view: pd.DataFrame, session_column: str = "session_id") -> set:
+    """
+    chat_question 이벤트 중 RAG 질문인 세션만 반환
+    
+    chat_question은 세 가지 타입으로 나뉩니다:
+    1. RAG 질문: 이후 glossary_answer 이벤트 발생
+    2. 링크: 이후 news_url_added_from_chat 이벤트 발생
+    3. 일반 질문: 이후 chat_response 이벤트 발생
+    
+    Returns:
+        RAG 질문인 chat_question이 발생한 세션 ID 집합
+    """
+    if df_view.empty or "event_name" not in df_view.columns or session_column not in df_view.columns:
+        return set()
+    
+    chat_questions = df_view[df_view["event_name"] == "chat_question"].copy()
+    if chat_questions.empty:
+        return set()
+    
+    # 세션별로 그룹화하여 각 chat_question 이후 이벤트 확인
+    rag_sessions = set()
+    
+    for session_id in chat_questions[session_column].dropna().unique():
+        session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+        chat_question_indices = session_events[session_events["event_name"] == "chat_question"].index
+        
+        for chat_idx in chat_question_indices:
+            # chat_question 이후의 이벤트 확인
+            after_chat = session_events.loc[session_events.index > chat_idx]
+            
+            # RAG 질문인지 확인: glossary_answer 이벤트가 발생했는지
+            has_glossary_answer = (after_chat["event_name"] == "glossary_answer").any()
+            
+            # 링크나 검색 요청이 아닌지 확인 (이 경우 제외)
+            has_url_added = (after_chat["event_name"] == "news_url_added_from_chat").any()
+            has_search = (after_chat["event_name"] == "news_search_from_chat").any()
+            
+            # RAG 질문이고, 링크나 검색 요청이 아닌 경우만 포함
+            if has_glossary_answer and not has_url_added and not has_search:
+                rag_sessions.add(session_id)
+                break  # 한 세션에 여러 RAG 질문이 있어도 한 번만 추가
+    
+    return rag_sessions
+
 def _extract_perf_data(row: pd.Series) -> Optional[Dict[str, Any]]:
     """payload에서 성능 데이터 추출 (event_name 기반)"""
     try:
@@ -516,11 +560,115 @@ def _render_service_health_tab(df_view: pd.DataFrame, session_column: str):
         detail_opens = int((df_view["event_name"] == "news_detail_open").sum())
         st.metric("상세 진입", detail_opens)
     with col3:
+        # Glossary 클릭과 챗봇 질문을 하나로 묶음 (둘 다 RAG 사용)
+        glossary_clicks = int((df_view["event_name"] == "glossary_click").sum())
         chat_questions = int((df_view["event_name"] == "chat_question").sum())
-        st.metric("챗 질문", chat_questions)
+        rag_questions = glossary_clicks + chat_questions
+        st.metric("Glossary/질문 (RAG)", rag_questions)
     with col4:
         url_errors = int((df_view["event_name"] == "news_url_add_error").sum())
         st.metric("URL 파싱 실패", url_errors)
+    
+    # 성능 요약 메트릭 (KPI에서 이동)
+    st.markdown("#### ⚡ 성능 요약")
+    
+    # 평균 뉴스 하이라이트 속도 (캐시 히트/미스 구분)
+    detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
+    highlight_latencies = []
+    highlight_latencies_cache_miss = []  # 캐시 미스만 (실제 성능 문제 파악용)
+    highlight_latencies_cache_hit = []   # 캐시 히트만 (참고용)
+    
+    for idx, row in detail_events.iterrows():
+        perf_data = _extract_perf_data(row)
+        if perf_data and isinstance(perf_data, dict):
+            highlight_ms = perf_data.get("highlight_ms")
+            cache_hit = perf_data.get("highlight_cache_hit", False)
+            
+            if highlight_ms is not None:
+                try:
+                    highlight_value = float(highlight_ms)
+                    # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
+                    if highlight_value > 0 and highlight_value < 100000:  # 100초 이상은 제외
+                        highlight_latencies.append(highlight_value)
+                        # 캐시 히트/미스 구분
+                        if cache_hit:
+                            highlight_latencies_cache_hit.append(highlight_value)
+                        else:
+                            highlight_latencies_cache_miss.append(highlight_value)
+                except (ValueError, TypeError):
+                    pass
+    
+    avg_highlight_latency = sum(highlight_latencies) / len(highlight_latencies) if highlight_latencies else None
+    avg_highlight_cache_miss = sum(highlight_latencies_cache_miss) / len(highlight_latencies_cache_miss) if highlight_latencies_cache_miss else None
+    avg_highlight_cache_hit = sum(highlight_latencies_cache_hit) / len(highlight_latencies_cache_hit) if highlight_latencies_cache_hit else None
+    
+    # 챗봇 응답 속도
+    chat_response_events = df_view[df_view["event_name"].isin(["chat_response", "glossary_answer"])].copy()
+    chat_latencies = []
+    for idx, row in chat_response_events.iterrows():
+        # 여러 소스에서 latency_ms 추출 시도
+        latency_ms = None
+        
+        # 1. perf_data에서 추출
+        perf_data = _extract_perf_data(row)
+        if perf_data and isinstance(perf_data, dict):
+            latency_ms = perf_data.get("latency_ms")
+            # latency_ms가 없으면 total_ms 사용
+            if latency_ms is None:
+                latency_ms = perf_data.get("total_ms")
+        
+        # 2. payload에서 직접 추출
+        if latency_ms is None:
+            payload = _parse_payload(row.get("payload"))
+            if payload:
+                latency_ms = payload.get("latency_ms")
+                if latency_ms is None:
+                    latency_ms = payload.get("total_ms")
+        
+        # 3. 컬럼에서 직접 추출
+        if latency_ms is None:
+            latency_ms = row.get("latency_ms")
+        
+        if latency_ms is not None:
+            try:
+                latency_value = float(latency_ms)
+                # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
+                if latency_value > 0 and latency_value < 1000000:  # 1000초 이상은 제외
+                    chat_latencies.append(latency_value)
+            except (ValueError, TypeError):
+                pass
+    avg_chat_latency = sum(chat_latencies) / len(chat_latencies) if chat_latencies else None
+    
+    # 성능 요약 메트릭 표시
+    perf_col1, perf_col2, perf_col3 = st.columns(3)
+    with perf_col1:
+        if avg_highlight_latency is not None:
+            st.metric("평균 하이라이트 속도", f"{avg_highlight_latency:.0f}ms")
+            # 캐시 히트/미스 정보 표시
+            if avg_highlight_cache_hit is not None and avg_highlight_cache_miss is not None:
+                st.caption(f"캐시 히트: {avg_highlight_cache_hit:.0f}ms | 캐시 미스: {avg_highlight_cache_miss:.0f}ms")
+            elif avg_highlight_cache_hit is not None:
+                st.caption(f"캐시 히트: {avg_highlight_cache_hit:.0f}ms")
+            elif avg_highlight_cache_miss is not None:
+                st.caption(f"캐시 미스: {avg_highlight_cache_miss:.0f}ms")
+        else:
+            st.metric("평균 하이라이트 속도", "N/A")
+    
+    with perf_col2:
+        # 95 percentile latency
+        if highlight_latencies:
+            p95_latency = pd.Series(highlight_latencies).quantile(0.95)
+            st.metric("95% 하이라이트 속도", f"{p95_latency:.0f}ms")
+        else:
+            st.metric("95% 하이라이트 속도", "N/A")
+    
+    with perf_col3:
+        if avg_chat_latency is not None:
+            st.metric("평균 챗봇 응답 속도", f"{avg_chat_latency:.0f}ms")
+        else:
+            st.metric("평균 챗봇 응답 속도", "N/A")
+    
+    st.markdown("---")
     
     # 성능 데이터 추출
     perf_events = df_view[df_view["event_name"].isin([
@@ -2808,8 +2956,11 @@ def _render_user_behavior_tab(df_view: pd.DataFrame, session_column: str):
             ctr = (detail_opens / news_clicks) * 100
             st.caption(f"진입률: {ctr:.1f}%")
     with col3:
+        # Glossary 클릭과 챗봇 질문을 하나로 묶음 (둘 다 RAG 사용)
+        glossary_clicks = int((df_view["event_name"] == "glossary_click").sum())
         chat_questions = int((df_view["event_name"] == "chat_question").sum())
-        st.metric("챗 질문", chat_questions)
+        rag_questions = glossary_clicks + chat_questions
+        st.metric("Glossary/질문 (RAG)", rag_questions)
     with col4:
         search_requests = int((df_view["event_name"] == "news_search_from_chat").sum())
         st.metric("뉴스 검색", search_requests)
@@ -2914,25 +3065,36 @@ def _render_summary_clicks(df_view: pd.DataFrame):
     st.metric("요약 클릭", summary_clicks)
 
 def _render_term_clicks(df_view: pd.DataFrame):
-    """용어 클릭률 분석"""
-    term_clicks = df_view[df_view["event_name"] == "glossary_click"]
-    term_answers = df_view[df_view["event_name"] == "glossary_answer"]
+    """용어 클릭률 분석 (Glossary 클릭과 RAG 챗봇 질문 통합)"""
+    # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
+    glossary_clicks = df_view[df_view["event_name"] == "glossary_click"]
+    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view)
+    rag_chat_questions = df_view[
+        (df_view["event_name"] == "chat_question") & 
+        (df_view["session_id"].isin(rag_chat_question_sessions))
+    ] if "session_id" in df_view.columns else pd.DataFrame()
+    rag_questions = pd.concat([glossary_clicks, rag_chat_questions], ignore_index=True) if not (glossary_clicks.empty and rag_chat_questions.empty) else pd.DataFrame()
     
-    if term_clicks.empty and term_answers.empty:
+    glossary_answers = df_view[df_view["event_name"] == "glossary_answer"]
+    chat_responses = df_view[df_view["event_name"] == "chat_response"]
+    rag_responses = pd.concat([glossary_answers, chat_responses], ignore_index=True) if not (glossary_answers.empty and chat_responses.empty) else pd.DataFrame()
+    
+    if rag_questions.empty and rag_responses.empty:
         return
     
-    st.markdown("#### 💡 용어 클릭률")
+    st.markdown("#### 💡 Glossary/질문 (RAG) 사용률")
+    st.caption("**참고**: Glossary 클릭과 챗봇 질문은 모두 RAG를 사용하므로 하나로 묶어서 분석합니다.")
     
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("용어 클릭", len(term_clicks))
+        st.metric("Glossary/질문 (RAG)", len(rag_questions))
     with col2:
-        st.metric("용어 답변", len(term_answers))
+        st.metric("응답/해설", len(rag_responses))
     
-    # 인기 용어 Top 10
-    if not term_clicks.empty:
+    # 인기 용어 Top 10 (Glossary 클릭과 챗봇 질문 모두 포함)
+    if not rag_questions.empty:
         term_list = []
-        for idx, row in term_clicks.iterrows():
+        for idx, row in rag_questions.iterrows():
             term = _get_term_from_row(row)
             if term:
                 term_list.append(term)
@@ -3019,19 +3181,28 @@ def _render_url_input_usage(df_view: pd.DataFrame):
             st.metric("세션당 사용률", "N/A")
 
 def _render_chat_question_types(df_view: pd.DataFrame):
-    """챗봇 질문 타입 분포"""
+    """챗봇 질문 타입 분포 (Glossary 클릭과 챗봇 질문 통합)"""
     chat_events = df_view[df_view["event_name"].isin([
-        "chat_question", "glossary_answer", "chat_response", "news_search_from_chat", "news_url_added_from_chat"
+        "glossary_click", "chat_question", "glossary_answer", "chat_response", "news_search_from_chat", "news_url_added_from_chat"
     ])]
     
     if chat_events.empty:
         return
     
-    st.markdown("#### 💬 챗봇 질문 타입 분포")
+    st.markdown("#### 💬 Glossary/질문 (RAG) 타입 분포")
+    st.caption("**참고**: Glossary 클릭과 챗봇 질문은 모두 RAG를 사용하므로 하나로 묶어서 분석합니다.")
+    
+    # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
+    glossary_clicks = len(df_view[df_view["event_name"] == "glossary_click"])
+    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view)
+    rag_chat_questions = len(df_view[
+        (df_view["event_name"] == "chat_question") & 
+        (df_view["session_id"].isin(rag_chat_question_sessions))
+    ]) if "session_id" in df_view.columns else 0
+    rag_questions_total = glossary_clicks + rag_chat_questions
     
     question_types = {
-        "용어 질문": len(df_view[df_view["event_name"] == "glossary_answer"]),
-        "일반 질문": len(df_view[df_view["event_name"] == "chat_response"]),
+        "Glossary/질문 (RAG)": rag_questions_total,
         "뉴스 검색": len(df_view[df_view["event_name"] == "news_search_from_chat"]),
         "URL 입력": len(df_view[df_view["event_name"] == "news_url_added_from_chat"]),
     }
@@ -3295,45 +3466,12 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 1
     news_clicks_per_session = news_clicks / total_sessions if total_sessions > 0 else 0
     
-    # 4. Glossary 사용 세션 비율
-    glossary_sessions = df_view[df_view["event_name"] == "glossary_click"][session_column].nunique() if session_column in df_view.columns else 0
-    glossary_usage_rate = (glossary_sessions / total_sessions * 100) if total_sessions > 0 else 0
-    
-    # 5. 챗봇 사용 세션 비율
-    chat_sessions = df_view[df_view["event_name"].isin(["chat_question", "chat_response"])][session_column].nunique() if session_column in df_view.columns else 0
-    chat_usage_rate = (chat_sessions / total_sessions * 100) if total_sessions > 0 else 0
-    
-    # 6. 평균 뉴스 하이라이트 속도 (캐시 히트/미스 구분)
-    # news_detail_open 이벤트에서 하이라이트 처리 시간 추출
-    # 캐시 히트는 매우 빠르므로(3ms 정도) 별도로 구분하여 표시
-    detail_events = df_view[df_view["event_name"] == "news_detail_open"].copy()
-    highlight_latencies = []
-    highlight_latencies_cache_miss = []  # 캐시 미스만 (실제 성능 문제 파악용)
-    highlight_latencies_cache_hit = []   # 캐시 히트만 (참고용)
-    
-    for idx, row in detail_events.iterrows():
-        perf_data = _extract_perf_data(row)
-        if perf_data and isinstance(perf_data, dict):
-            highlight_ms = perf_data.get("highlight_ms")
-            cache_hit = perf_data.get("highlight_cache_hit", False)
-            
-            if highlight_ms is not None:
-                try:
-                    highlight_value = float(highlight_ms)
-                    # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
-                    if highlight_value > 0 and highlight_value < 100000:  # 100초 이상은 제외
-                        highlight_latencies.append(highlight_value)
-                        # 캐시 히트/미스 구분
-                        if cache_hit:
-                            highlight_latencies_cache_hit.append(highlight_value)
-                        else:
-                            highlight_latencies_cache_miss.append(highlight_value)
-                except (ValueError, TypeError):
-                    pass
-    
-    avg_highlight_latency = sum(highlight_latencies) / len(highlight_latencies) if highlight_latencies else None
-    avg_highlight_cache_miss = sum(highlight_latencies_cache_miss) / len(highlight_latencies_cache_miss) if highlight_latencies_cache_miss else None
-    avg_highlight_cache_hit = sum(highlight_latencies_cache_hit) / len(highlight_latencies_cache_hit) if highlight_latencies_cache_hit else None
+    # 4. Glossary/질문 (RAG) 사용 세션 비율 (Glossary 클릭과 RAG 챗봇 질문 통합)
+    glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique()) if session_column in df_view.columns else set()
+    rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
+    rag_usage_sessions = glossary_sessions | rag_chat_question_sessions  # Glossary 또는 RAG 질문
+    rag_usage_count = len(rag_usage_sessions)
+    rag_usage_rate = (rag_usage_count / total_sessions * 100) if total_sessions > 0 else 0
     
     # 메트릭 카드 표시
     col1, col2, col3 = st.columns(3)
@@ -3344,73 +3482,7 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
         st.metric("평균 세션 길이", f"{avg_session_length:.1f}분")
         st.metric("세션당 뉴스 클릭", f"{news_clicks_per_session:.1f}건")
     with col3:
-        st.metric("Glossary 사용 세션", f"{glossary_usage_rate:.1f}%")
-        st.metric("챗봇 사용 세션", f"{chat_usage_rate:.1f}%")
-    
-    col4, col5, col6 = st.columns(3)
-    with col4:
-        if avg_highlight_latency is not None:
-            st.metric("평균 하이라이트 속도", f"{avg_highlight_latency:.0f}ms")
-            # 캐시 히트/미스 정보 표시
-            if avg_highlight_cache_hit is not None and avg_highlight_cache_miss is not None:
-                st.caption(f"캐시 히트: {avg_highlight_cache_hit:.0f}ms | 캐시 미스: {avg_highlight_cache_miss:.0f}ms")
-            elif avg_highlight_cache_hit is not None:
-                st.caption(f"캐시 히트: {avg_highlight_cache_hit:.0f}ms")
-            elif avg_highlight_cache_miss is not None:
-                st.caption(f"캐시 미스: {avg_highlight_cache_miss:.0f}ms")
-        else:
-            st.metric("평균 하이라이트 속도", "N/A")
-    
-    # 95 percentile latency
-    if highlight_latencies:
-        p95_latency = pd.Series(highlight_latencies).quantile(0.95)
-        with col5:
-            st.metric("95% 하이라이트 속도", f"{p95_latency:.0f}ms")
-    else:
-        with col5:
-            st.metric("95% 하이라이트 속도", "N/A")
-    
-    # 챗봇 응답 속도
-    chat_response_events = df_view[df_view["event_name"].isin(["chat_response", "glossary_answer"])].copy()
-    chat_latencies = []
-    for idx, row in chat_response_events.iterrows():
-        # 여러 소스에서 latency_ms 추출 시도
-        latency_ms = None
-        
-        # 1. perf_data에서 추출
-        perf_data = _extract_perf_data(row)
-        if perf_data and isinstance(perf_data, dict):
-            latency_ms = perf_data.get("latency_ms")
-            # latency_ms가 없으면 total_ms 사용
-            if latency_ms is None:
-                latency_ms = perf_data.get("total_ms")
-        
-        # 2. payload에서 직접 추출
-        if latency_ms is None:
-            payload = _parse_payload(row.get("payload"))
-            if payload:
-                latency_ms = payload.get("latency_ms")
-                if latency_ms is None:
-                    latency_ms = payload.get("total_ms")
-        
-        # 3. 컬럼에서 직접 추출
-        if latency_ms is None:
-            latency_ms = row.get("latency_ms")
-        
-        if latency_ms is not None:
-            try:
-                latency_value = float(latency_ms)
-                # 유효한 값만 추가 (0보다 크고 합리적인 범위 내)
-                if latency_value > 0 and latency_value < 1000000:  # 1000초 이상은 제외
-                    chat_latencies.append(latency_value)
-            except (ValueError, TypeError):
-                pass
-    avg_chat_latency = sum(chat_latencies) / len(chat_latencies) if chat_latencies else None
-    with col6:
-        if avg_chat_latency is not None:
-            st.metric("평균 챗봇 응답 속도", f"{avg_chat_latency:.0f}ms")
-        else:
-            st.metric("평균 챗봇 응답 속도", "N/A")
+        st.metric("Glossary/질문 (RAG) 사용 세션", f"{rag_usage_rate:.1f}%")
     
     st.markdown("---")
     
@@ -3440,26 +3512,33 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                 st.plotly_chart(fig1, use_container_width=True)
                 st.dataframe(hourly_news_clicks, use_container_width=True, height=200)
             
-            # 2. 시간별 Glossary 사용 세션 비율 추이
+            # 2. 시간별 Glossary/질문 (RAG) 사용 세션 비율 추이
             hourly_sessions = df_view.groupby("hour")[session_column].nunique().reset_index(name="전체 세션")
-            hourly_glossary_sessions = df_view[df_view["event_name"] == "glossary_click"].groupby("hour")[session_column].nunique().reset_index(name="Glossary 세션")
-            
-            if len(hourly_sessions) > 0 and len(hourly_glossary_sessions) > 0:
-                hourly_usage = hourly_sessions.merge(hourly_glossary_sessions, on="hour", how="left")
-                hourly_usage["Glossary 세션"] = hourly_usage["Glossary 세션"].fillna(0)
-                hourly_usage["사용 비율 (%)"] = (hourly_usage["Glossary 세션"] / hourly_usage["전체 세션"] * 100).fillna(0)
+            # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
+            glossary_hourly = df_view[df_view["event_name"] == "glossary_click"]
+            rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
+            rag_chat_hourly = df_view[
+                (df_view["event_name"] == "chat_question") & 
+                (df_view[session_column].isin(rag_chat_question_sessions))
+            ] if session_column in df_view.columns else pd.DataFrame()
+            rag_events_hourly = pd.concat([glossary_hourly, rag_chat_hourly], ignore_index=True) if not (glossary_hourly.empty and rag_chat_hourly.empty) else pd.DataFrame()
+            if len(rag_events_hourly) > 0:
+                hourly_rag_sessions = rag_events_hourly.groupby("hour")[session_column].nunique().reset_index(name="RAG 세션")
+                hourly_usage = hourly_sessions.merge(hourly_rag_sessions, on="hour", how="left")
+                hourly_usage["RAG 세션"] = hourly_usage["RAG 세션"].fillna(0)
+                hourly_usage["사용 비율 (%)"] = (hourly_usage["RAG 세션"] / hourly_usage["전체 세션"] * 100).fillna(0)
                 hourly_usage = hourly_usage.sort_values("hour")
                 
                 fig2 = px.line(
                     hourly_usage,
                     x="hour",
                     y="사용 비율 (%)",
-                    title="시간별 Glossary 사용 세션 비율 추이",
+                    title="시간별 Glossary/질문 (RAG) 사용 세션 비율 추이",
                     labels={"hour": "시간 (시)", "사용 비율 (%)": "비율 (%)"}
                 )
                 fig2.update_xaxes(tickmode='linear', tick0=0, dtick=3, tickformat='%H시')
                 st.plotly_chart(fig2, use_container_width=True)
-                st.dataframe(hourly_usage[["hour", "전체 세션", "Glossary 세션", "사용 비율 (%)"]], use_container_width=True, height=200)
+                st.dataframe(hourly_usage[["hour", "전체 세션", "RAG 세션", "사용 비율 (%)"]], use_container_width=True, height=200)
         else:
             # 일자별 추이 (여러 날짜 선택한 경우)
             # 1. 일자별 뉴스 클릭 추이
@@ -3485,14 +3564,21 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                 display_df1["날짜"] = display_df1["date"].astype(str)
                 st.dataframe(display_df1[["날짜", "클릭 수"]], use_container_width=True, height=200)
             
-            # 2. Glossary 사용 세션 비율 추이
+            # 2. 일자별 Glossary/질문 (RAG) 사용 세션 비율 추이
             daily_sessions = df_view.groupby("date")[session_column].nunique().reset_index(name="전체 세션")
-            daily_glossary_sessions = df_view[df_view["event_name"] == "glossary_click"].groupby("date")[session_column].nunique().reset_index(name="Glossary 세션")
-            
-            if len(daily_sessions) > 0 and len(daily_glossary_sessions) > 0:
-                daily_usage = daily_sessions.merge(daily_glossary_sessions, on="date", how="left")
-                daily_usage["Glossary 세션"] = daily_usage["Glossary 세션"].fillna(0)
-                daily_usage["사용 비율 (%)"] = (daily_usage["Glossary 세션"] / daily_usage["전체 세션"] * 100).fillna(0)
+            # Glossary 클릭과 RAG 챗봇 질문을 하나로 묶음
+            glossary_daily = df_view[df_view["event_name"] == "glossary_click"]
+            rag_chat_question_sessions = _get_rag_chat_question_sessions(df_view, session_column)
+            rag_chat_daily = df_view[
+                (df_view["event_name"] == "chat_question") & 
+                (df_view[session_column].isin(rag_chat_question_sessions))
+            ] if session_column in df_view.columns else pd.DataFrame()
+            rag_events_daily = pd.concat([glossary_daily, rag_chat_daily], ignore_index=True) if not (glossary_daily.empty and rag_chat_daily.empty) else pd.DataFrame()
+            if len(rag_events_daily) > 0:
+                daily_rag_sessions = rag_events_daily.groupby("date")[session_column].nunique().reset_index(name="RAG 세션")
+                daily_usage = daily_sessions.merge(daily_rag_sessions, on="date", how="left")
+                daily_usage["RAG 세션"] = daily_usage["RAG 세션"].fillna(0)
+                daily_usage["사용 비율 (%)"] = (daily_usage["RAG 세션"] / daily_usage["전체 세션"] * 100).fillna(0)
                 # 날짜를 datetime으로 변환 (시간 정보 제거)
                 daily_usage["date_dt"] = pd.to_datetime(daily_usage["date"])
                 daily_usage = daily_usage.sort_values("date_dt")
@@ -3501,7 +3587,7 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                     daily_usage,
                     x="date_dt",
                     y="사용 비율 (%)",
-                    title="일자별 Glossary 사용 세션 비율 추이",
+                    title="일자별 Glossary/질문 (RAG) 사용 세션 비율 추이",
                     labels={"date_dt": "날짜", "사용 비율 (%)": "비율 (%)"}
                 )
                 # X축 포맷을 날짜만 표시하도록 설정
@@ -3510,18 +3596,19 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                 # 날짜를 문자열로 변환하여 표시
                 display_df2 = daily_usage.copy()
                 display_df2["날짜"] = display_df2["date"].astype(str)
-                st.dataframe(display_df2[["날짜", "전체 세션", "Glossary 세션", "사용 비율 (%)"]], use_container_width=True, height=200)
+                st.dataframe(display_df2[["날짜", "전체 세션", "RAG 세션", "사용 비율 (%)"]], use_container_width=True, height=200)
     
     st.markdown("---")
     
     # ========== C. 행동 흐름 (Funnel Chart) ==========
     st.markdown("#### 🔽 행동 흐름 분석")
     
-    # ========== 퍼널 1: 뉴스 이해 퍼널 (News Understanding Funnel) ==========
+    # ========== 퍼널 1: 뉴스 기반 이해 퍼널 (News-based Understanding Funnel) ==========
     # 목적: 초보자가 뉴스를 얼마나 '이해'했는가 측정
-    # 추천 뉴스 노출 → 뉴스 클릭 → Glossary 클릭 → 질문 → 요약/해설 → 재탐색
-    st.markdown("##### 1️⃣ 뉴스 이해 퍼널 (News → Glossary → 질문 → 재탐색)")
+    # 뉴스 클릭 → Glossary 클릭 → 질문 → 재탐색
+    st.markdown("##### 1️⃣ 뉴스 기반 이해 퍼널 (뉴스 클릭 → Glossary 클릭 → 질문 → 재탐색)")
     st.caption("**목적**: 홈 화면에서 추천 뉴스를 본 사용자의 학습 흐름 분석")
+    st.caption("**참고**: Glossary 클릭(용어 학습)과 질문(뉴스 이해)을 분리하여 분석합니다.")
     
     # 홈에서 뉴스 클릭한 세션 (검색이 아닌 직접 클릭)
     # source가 "list" 또는 "home"인 news_click만 포함 (검색 결과에서 온 것은 제외)
@@ -3534,36 +3621,50 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
     if news_click_sessions > 0:
         # 각 이벤트별 세션 집합 생성
         news_sessions = set(home_news_clicks[session_column].dropna().unique())
-        glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
-        chat_question_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
-        chat_response_sessions = set(df_view[df_view["event_name"] == "chat_response"][session_column].dropna().unique())
         
-        # 순차적 전환 계산
-        # 2단계: 뉴스 클릭 → Glossary 클릭
+        # 2단계: Glossary 클릭 (용어 학습)
+        glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
         glossary_after_news = len(news_sessions & glossary_sessions)
         
-        # 3단계: Glossary 클릭 → 질문
-        glossary_and_news = news_sessions & glossary_sessions
-        question_after_glossary = len(glossary_and_news & chat_question_sessions)
-        
-        # 4단계: 질문 → 응답 (요약/해설)
-        question_sessions = glossary_and_news & chat_question_sessions
-        response_after_question = len(question_sessions & chat_response_sessions)
-        
-        # 5단계: 재탐색 (같은 세션에서 다른 뉴스 클릭 또는 검색)
-        # 응답 후 다시 뉴스 클릭하거나 검색한 세션
-        re_explore_sessions = set()
-        for session_id in question_sessions & chat_response_sessions:
+        # 3단계: 질문 (뉴스 이해 질문)
+        # 뉴스 클릭 이후 발생한 chat_question만 포함 (RAG 여부, 출처 무관)
+        # 어느 뉴스 뒤라도 질문을 한 세션을 잡기 위해 첫 번째 뉴스 이후를 기준으로 확인
+        question_sessions = set()
+        for session_id in news_sessions:
             session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
-            # 응답 이벤트 이후에 뉴스 클릭이나 검색이 있는지 확인
-            response_indices = session_events[session_events["event_name"] == "chat_response"].index
-            if len(response_indices) > 0:
-                last_response_idx = response_indices[-1]
-                after_response = session_events.loc[session_events.index > last_response_idx]
-                if len(after_response) > 0:
+            # 뉴스 클릭 이후 질문 확인 (첫 번째 뉴스 클릭 이후 발생한 chat_question만)
+            news_click_indices = session_events[session_events["event_name"] == "news_click"].index
+            if len(news_click_indices) > 0:
+                first_news_idx = news_click_indices[0]
+                after_first_news = session_events.loc[session_events.index > first_news_idx]
+                # 첫 번째 뉴스 클릭 이후 chat_question 발생 확인 (RAG 여부 무관)
+                if (after_first_news["event_name"] == "chat_question").any():
+                    question_sessions.add(session_id)
+        question_count = len(question_sessions)
+        
+        # 4단계: 재탐색 (질문 또는 Glossary 클릭 이후 다시 뉴스 클릭)
+        re_explore_sessions = set()
+        for session_id in news_sessions:
+            session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+            # Glossary 클릭 또는 질문 이후 재탐색 확인
+            glossary_indices = session_events[session_events["event_name"] == "glossary_click"].index
+            question_indices = session_events[session_events["event_name"] == "chat_question"].index
+            
+            # 마지막 Glossary 클릭 또는 질문 찾기
+            last_interaction_idx = None
+            if len(glossary_indices) > 0:
+                last_interaction_idx = max(glossary_indices.tolist())
+            if len(question_indices) > 0:
+                last_question_idx = max(question_indices.tolist())
+                if last_interaction_idx is None or last_question_idx > last_interaction_idx:
+                    last_interaction_idx = last_question_idx
+            
+            if last_interaction_idx is not None:
+                after_interaction = session_events.loc[session_events.index > last_interaction_idx]
+                if len(after_interaction) > 0:
                     has_re_explore = (
-                        (after_response["event_name"] == "news_click").any() or
-                        (after_response["event_name"] == "news_search_from_chat").any()
+                        (after_interaction["event_name"] == "news_click").any() or
+                        (after_interaction["event_name"] == "news_search_from_chat").any()
                     )
                     if has_re_explore:
                         re_explore_sessions.add(session_id)
@@ -3571,14 +3672,13 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
         
         # 전환율 계산
         glossary_rate = (glossary_after_news / news_click_sessions * 100) if news_click_sessions > 0 else 0
-        question_rate = (question_after_glossary / glossary_after_news * 100) if glossary_after_news > 0 else 0
-        response_rate = (response_after_question / question_after_glossary * 100) if question_after_glossary > 0 else 0
-        re_explore_rate = (re_explore_count / response_after_question * 100) if response_after_question > 0 else 0
+        question_rate = (question_count / news_click_sessions * 100) if news_click_sessions > 0 else 0
+        re_explore_rate = (re_explore_count / news_click_sessions * 100) if news_click_sessions > 0 else 0
         
         funnel1_data = pd.DataFrame({
-            "단계": ["뉴스 클릭", "Glossary 클릭", "질문", "응답/해설", "재탐색"],
-            "세션 수": [news_click_sessions, glossary_after_news, question_after_glossary, response_after_question, re_explore_count],
-            "전환율 (%)": [100.0, glossary_rate, question_rate, response_rate, re_explore_rate]
+            "단계": ["뉴스 클릭", "Glossary 클릭", "질문", "재탐색"],
+            "세션 수": [news_click_sessions, glossary_after_news, question_count, re_explore_count],
+            "전환율 (%)": [100.0, glossary_rate, question_rate, re_explore_rate]
         })
         
         st.dataframe(funnel1_data, use_container_width=True)
@@ -3588,61 +3688,130 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                 funnel1_data,
                 x="세션 수",
                 y="단계",
-                title="뉴스 이해 퍼널 (홈 기반 학습 흐름)"
+                title="뉴스 기반 이해 퍼널 (뉴스 → 용어 → 질문 → 재탐색)"
             )
             st.plotly_chart(fig1, use_container_width=True)
         
         # 핵심 지표 강조
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Glossary 클릭률", f"{glossary_rate:.1f}%", 
-                     help="뉴스 난이도 판단 지표: 높을수록 어려운 뉴스")
+            st.metric("Glossary 사용률", f"{glossary_rate:.1f}%", 
+                     help="뉴스 클릭 후 용어 학습 비율")
         with col2:
-            st.metric("질문 전환율", f"{question_rate:.1f}%",
-                     help="학습 전환 지표: 뉴스가 학습 의욕을 유발했는지")
+            st.metric("질문 비율", f"{question_rate:.1f}%",
+                     help="뉴스 클릭 후 질문 비율")
         with col3:
             st.metric("재탐색율", f"{re_explore_rate:.1f}%",
-                     help="학습 루프 지표: 학습 후 추가 탐색으로 이어졌는지")
+                     help="학습 후 추가 탐색으로 이어졌는지")
     
-    # ========== 퍼널 2: 검색 기반 탐색 퍼널 (Search-based Exploration Funnel) ==========
-    # 목적: 검색-탐색 기능이 얼마나 도움이 되는지 측정
-    # 검색 입력 → 관련 뉴스 노출 → 뉴스 클릭 → Glossary 클릭 → 질문
+    # ========== 퍼널 2: 챗봇 기반 탐색 퍼널 (Chatbot-based Exploration Funnel) ==========
+    # 목적: 챗봇을 통한 탐색 기능이 얼마나 도움이 되는지 측정
+    # 질문 → 챗봇 응답 → 추천 뉴스 클릭 → Glossary 클릭 → 추가 질문
     st.markdown("---")
-    st.markdown("##### 2️⃣ 검색 기반 탐색 퍼널 (검색 → 뉴스 → Glossary → 질문)")
-    st.caption("**목적**: 챗봇 검색 기능의 효과성 및 검색 결과 품질 평가")
+    st.markdown("##### 2️⃣ 챗봇 기반 탐색 퍼널 (질문 → 챗봇 응답 → 추천 뉴스 클릭 → Glossary 클릭 → 추가 질문)")
+    st.caption("**목적**: 챗봇을 통한 탐색 기능의 효과성 및 추천 뉴스 품질 평가")
+    st.caption("**참고**: 챗봇이 추천한 뉴스를 클릭한 후의 학습 흐름을 분석합니다.")
     
-    # 1단계: 검색 입력한 세션
-    search_sessions = df_view[df_view["event_name"] == "news_search_from_chat"][session_column].nunique() if session_column in df_view.columns else 0
+    # 1단계: 질문 시작 (chat_question)
+    # chat_question 중에서 이후 chat_response가 발생한 것만 (RAG 질문만 제외)
+    # 같은 세션 내에 일반 질문과 RAG 질문이 섞여 있어도 일반 질문이 있으면 포함
+    all_chat_questions = df_view[df_view["event_name"] == "chat_question"].copy()
+    question_sessions = set()
     
-    if search_sessions > 0:
-        search_session_set = set(df_view[df_view["event_name"] == "news_search_from_chat"][session_column].dropna().unique())
+    for session_id in all_chat_questions[session_column].dropna().unique():
+        session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+        chat_question_indices = list(session_events[session_events["event_name"] == "chat_question"].index)
         
-        # 2단계: 검색 결과에서 뉴스 클릭 (검색 후 뉴스 선택)
-        # source가 "chat"이고 news_click 또는 news_selected_from_chat
-        search_news_clicks = df_view[
-            (df_view["event_name"].isin(["news_click", "news_selected_from_chat"])) &
-            (df_view["source"] == "chat")
-        ]
-        search_news_sessions = set(search_news_clicks[session_column].dropna().unique())
-        news_after_search = len(search_session_set & search_news_sessions)
+        for i, chat_idx in enumerate(chat_question_indices):
+            # 이 질문의 '끝'을 다음 질문 직전까지로 설정 (해당 질문만의 윈도우)
+            if i < len(chat_question_indices) - 1:
+                end_idx = chat_question_indices[i + 1]
+                window = session_events.loc[(session_events.index > chat_idx) & (session_events.index < end_idx)]
+            else:
+                # 마지막 질문인 경우 세션 끝까지
+                window = session_events.loc[session_events.index > chat_idx]
+            
+            # RAG 질문인지 확인 (해당 질문 윈도우 내에서 glossary_answer 발생)
+            has_glossary_answer = (window["event_name"] == "glossary_answer").any()
+            # 일반 질문인지 확인 (해당 질문 윈도우 내에서 chat_response 발생)
+            has_chat_response = (window["event_name"] == "chat_response").any()
+            
+            # 일반 질문이고, RAG 질문이 아닌 경우만 질문으로 간주
+            if has_chat_response and not has_glossary_answer:
+                question_sessions.add(session_id)
+                break  # 한 세션에 여러 질문이 있어도 한 번만 추가
+    
+    question_count = len(question_sessions)
+    
+    if question_count > 0:
+        # 2단계: 챗봇 응답 (chat_response)
+        chat_response_sessions = set()
+        for session_id in question_sessions:
+            session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+            chat_question_indices = session_events[session_events["event_name"] == "chat_question"].index
+            
+            for chat_idx in chat_question_indices:
+                after_chat = session_events.loc[session_events.index > chat_idx]
+                chat_responses = after_chat[after_chat["event_name"] == "chat_response"]
+                
+                if len(chat_responses) > 0:
+                    chat_response_sessions.add(session_id)
+                    break
         
-        # 3단계: 검색 결과 뉴스 클릭 → Glossary 클릭
-        search_glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
-        glossary_after_search_news = len((search_session_set & search_news_sessions) & search_glossary_sessions)
+        chat_response_count = len(chat_response_sessions)
         
-        # 4단계: Glossary 클릭 → 질문
-        search_chat_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
-        question_after_search_glossary = len(((search_session_set & search_news_sessions) & search_glossary_sessions) & search_chat_sessions)
+        # 3단계: 추천 뉴스 클릭 (news_click source="chat" 또는 news_selected_from_chat)
+        # chat_response 이후에 챗봇이 추천한 뉴스를 클릭한 세션
+        news_click_sessions = set()
+        for session_id in chat_response_sessions:
+            session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+            chat_response_indices = session_events[session_events["event_name"] == "chat_response"].index
+            
+            for resp_idx in chat_response_indices:
+                after_response = session_events.loc[session_events.index > resp_idx]
+                # news_click (source="chat") 또는 news_selected_from_chat 발생
+                has_news_click = (
+                    ((after_response["event_name"] == "news_click") & (after_response["source"] == "chat")).any() or
+                    (after_response["event_name"] == "news_selected_from_chat").any()
+                )
+                if has_news_click:
+                    news_click_sessions.add(session_id)
+                    break
+        
+        news_click_count = len(news_click_sessions)
+        
+        # 4단계: Glossary 클릭
+        glossary_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
+        glossary_after_news = len(news_click_sessions & glossary_sessions)
+        
+        # 5단계: 추가 질문 (chat_question - 뉴스 클릭 이후 질문)
+        # 뉴스 클릭 이후에 질문이 발생한 세션 (RAG 질문 여부와 관계없이)
+        additional_question_sessions = set()
+        for session_id in news_click_sessions:
+            session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
+            # 뉴스 클릭 이후 질문 확인
+            news_click_indices = session_events[
+                ((session_events["event_name"] == "news_click") & (session_events["source"] == "chat")) |
+                (session_events["event_name"] == "news_selected_from_chat")
+            ].index
+            if len(news_click_indices) > 0:
+                last_news_idx = news_click_indices[-1]
+                after_news = session_events.loc[session_events.index > last_news_idx]
+                # chat_question 발생 확인
+                if (after_news["event_name"] == "chat_question").any():
+                    additional_question_sessions.add(session_id)
+        additional_question_count = len(additional_question_sessions)
         
         # 전환율 계산
-        news_rate = (news_after_search / search_sessions * 100) if search_sessions > 0 else 0
-        glossary_rate_search = (glossary_after_search_news / news_after_search * 100) if news_after_search > 0 else 0
-        question_rate_search = (question_after_search_glossary / glossary_after_search_news * 100) if glossary_after_search_news > 0 else 0
+        response_rate = (chat_response_count / question_count * 100) if question_count > 0 else 0
+        news_click_rate = (news_click_count / chat_response_count * 100) if chat_response_count > 0 else 0
+        glossary_rate = (glossary_after_news / news_click_count * 100) if news_click_count > 0 else 0
+        additional_question_rate = (additional_question_count / news_click_count * 100) if news_click_count > 0 else 0
         
         funnel2_data = pd.DataFrame({
-            "단계": ["검색 입력", "뉴스 클릭", "Glossary 클릭", "질문"],
-            "세션 수": [search_sessions, news_after_search, glossary_after_search_news, question_after_search_glossary],
-            "전환율 (%)": [100.0, news_rate, glossary_rate_search, question_rate_search]
+            "단계": ["질문", "챗봇 응답", "추천 뉴스 클릭", "Glossary 클릭", "추가 질문"],
+            "세션 수": [question_count, chat_response_count, news_click_count, glossary_after_news, additional_question_count],
+            "전환율 (%)": [100.0, response_rate, news_click_rate, glossary_rate, additional_question_rate]
         })
         
         st.dataframe(funnel2_data, use_container_width=True)
@@ -3652,25 +3821,29 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
                 funnel2_data,
                 x="세션 수",
                 y="단계",
-                title="검색 기반 탐색 퍼널 (챗봇 검색 흐름)"
+                title="챗봇 기반 탐색 퍼널 (질문 → 뉴스를 통한 학습 흐름)"
             )
             st.plotly_chart(fig2, use_container_width=True)
         
         # 핵심 지표 강조
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("검색 → 뉴스 클릭률 (CNCR)", f"{news_rate:.1f}%",
-                     help="검색 품질 평가 핵심 지표: 검색 결과가 사용자 의도에 맞는가?")
+            st.metric("추천 뉴스 클릭률", f"{news_click_rate:.1f}%",
+                     help="챗봇 응답 후 추천 뉴스 클릭률")
         with col2:
-            st.metric("검색 뉴스 Glossary 클릭률", f"{glossary_rate_search:.1f}%",
-                     help="검색된 뉴스의 초보자 난이도 평가")
+            st.metric("Glossary 사용률", f"{glossary_rate:.1f}%",
+                     help="뉴스 클릭 후 Glossary 사용률")
+        with col3:
+            st.metric("추가 질문 비율", f"{additional_question_rate:.1f}%",
+                     help="뉴스 클릭 후 추가 질문 비율")
     
     # ========== 퍼널 3: 전체 학습 여정 퍼널 (Overall Learning Journey) ==========
     # 목적: 전체 서비스 사용 흐름 분석
-    # 진입 → 뉴스/검색 중 선택 → 뉴스 탐색 → Glossary → 질문 → 재탐색
+    # 진입 → 뉴스/검색 중 선택 → 뉴스 탐색 → Glossary/질문 (RAG 사용) → 재탐색
     st.markdown("---")
     st.markdown("##### 3️⃣ 전체 학습 여정 퍼널 (Overall Learning Journey)")
     st.caption("**목적**: 전체 서비스 사용 흐름 및 학습 여정 분석")
+    st.caption("**참고**: Glossary 클릭과 챗봇 질문은 모두 RAG를 사용하므로 하나로 묶어서 분석합니다. 응답/해설은 질문이 들어오면 100% 생성되므로 퍼널에서 제외합니다.")
     
     # 전체 세션 수
     total_sessions = df_view[session_column].nunique() if session_column in df_view.columns else 0
@@ -3681,37 +3854,49 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
         # 1단계: 진입 (세션 시작)
         entry_sessions = total_sessions
         
-        # 2단계: 뉴스 또는 검색 중 선택
-        news_or_search_sessions = set()
+        # 2단계: 뉴스/챗봇 시작
+        # 첫 뉴스 클릭 또는 첫 챗봇 질문 (성격과 무관하게)
         news_sessions_all = set(df_view[df_view["event_name"] == "news_click"][session_column].dropna().unique())
-        search_sessions_all = set(df_view[df_view["event_name"] == "news_search_from_chat"][session_column].dropna().unique())
-        news_or_search_sessions = news_sessions_all | search_sessions_all
-        selected_path_count = len(news_or_search_sessions)
+        # 첫 챗봇 질문으로 시작한 세션 (RAG 여부, 링크 여부 무관)
+        chat_question_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
+        news_or_chat_sessions = news_sessions_all | chat_question_sessions
+        selected_path_count = len(news_or_chat_sessions)
         
         # 3단계: 뉴스 탐색 (뉴스 클릭 또는 상세 열기)
         news_explore_sessions = set(df_view[df_view["event_name"].isin(["news_click", "news_detail_open"])][session_column].dropna().unique())
-        news_explore_count = len(news_explore_sessions & news_or_search_sessions)
+        news_explore_count = len(news_explore_sessions & news_or_chat_sessions)
         
-        # 4단계: Glossary 클릭
+        # 4단계: Glossary/질문 (RAG 사용)
         glossary_all_sessions = set(df_view[df_view["event_name"] == "glossary_click"][session_column].dropna().unique())
-        glossary_count = len(glossary_all_sessions & news_explore_sessions)
+        rag_chat_question_all_sessions = _get_rag_chat_question_sessions(df_view, session_column)
+        rag_usage_all_sessions = glossary_all_sessions | rag_chat_question_all_sessions  # Glossary 또는 RAG 질문
+        # 2단계에서 시작한 사용자들 중 → 3단계 → 4단계로 간 비율을 정확히 보기 위해 세 집합 모두 교집합
+        rag_usage_count = len(rag_usage_all_sessions & news_explore_sessions & news_or_chat_sessions)
         
-        # 5단계: 질문
-        question_all_sessions = set(df_view[df_view["event_name"] == "chat_question"][session_column].dropna().unique())
-        question_count = len(question_all_sessions & glossary_all_sessions)
-        
-        # 6단계: 재탐색 (질문 후 다시 뉴스 클릭 또는 검색)
+        # 5단계: 재탐색 (Glossary/질문 이후 다시 뉴스 클릭 또는 검색)
         re_explore_all = set()
-        for session_id in question_all_sessions & glossary_all_sessions:
+        for session_id in rag_usage_all_sessions & news_explore_sessions:
             session_events = df_view[df_view[session_column] == session_id].sort_values("event_time")
-            question_indices = session_events[session_events["event_name"] == "chat_question"].index
-            if len(question_indices) > 0:
-                last_question_idx = question_indices[-1]
-                after_question = session_events.loc[session_events.index > last_question_idx]
-                if len(after_question) > 0:
+            # Glossary/질문 이벤트 찾기 (RAG 질문만)
+            glossary_indices = session_events[session_events["event_name"] == "glossary_click"].index
+            rag_chat_indices = session_events[
+                (session_events["event_name"] == "chat_question") & 
+                (session_events[session_column] == session_id)
+            ].index
+            # RAG 챗봇 질문인지 확인 (이후 glossary_answer가 있는지)
+            rag_chat_valid_indices = []
+            for chat_idx in rag_chat_indices:
+                after_chat = session_events.loc[session_events.index > chat_idx]
+                if (after_chat["event_name"] == "glossary_answer").any():
+                    rag_chat_valid_indices.append(chat_idx)
+            rag_indices = glossary_indices.tolist() + rag_chat_valid_indices
+            if len(rag_indices) > 0:
+                last_rag_idx = max(rag_indices)
+                after_rag = session_events.loc[session_events.index > last_rag_idx]
+                if len(after_rag) > 0:
                     has_re_explore = (
-                        (after_question["event_name"] == "news_click").any() or
-                        (after_question["event_name"] == "news_search_from_chat").any()
+                        (after_rag["event_name"] == "news_click").any() or
+                        (after_rag["event_name"] == "news_search_from_chat").any()
                     )
                     if has_re_explore:
                         re_explore_all.add(session_id)
@@ -3720,14 +3905,13 @@ def _render_kpi_dashboard(df_view: pd.DataFrame, session_column: str):
         # 전환율 계산
         path_selection_rate = (selected_path_count / entry_sessions * 100) if entry_sessions > 0 else 0
         news_explore_rate = (news_explore_count / selected_path_count * 100) if selected_path_count > 0 else 0
-        glossary_journey_rate = (glossary_count / news_explore_count * 100) if news_explore_count > 0 else 0
-        question_journey_rate = (question_count / glossary_count * 100) if glossary_count > 0 else 0
-        re_explore_journey_rate = (re_explore_all_count / question_count * 100) if question_count > 0 else 0
+        rag_usage_journey_rate = (rag_usage_count / news_explore_count * 100) if news_explore_count > 0 else 0
+        re_explore_journey_rate = (re_explore_all_count / rag_usage_count * 100) if rag_usage_count > 0 else 0
         
         funnel3_data = pd.DataFrame({
-            "단계": ["진입", "뉴스/검색 선택", "뉴스 탐색", "Glossary", "질문", "재탐색"],
-            "세션 수": [entry_sessions, selected_path_count, news_explore_count, glossary_count, question_count, re_explore_all_count],
-            "전환율 (%)": [100.0, path_selection_rate, news_explore_rate, glossary_journey_rate, question_journey_rate, re_explore_journey_rate]
+            "단계": ["진입", "뉴스/챗봇 시작", "뉴스 탐색", "Glossary/질문 (RAG)", "재탐색"],
+            "세션 수": [entry_sessions, selected_path_count, news_explore_count, rag_usage_count, re_explore_all_count],
+            "전환율 (%)": [100.0, path_selection_rate, news_explore_rate, rag_usage_journey_rate, re_explore_journey_rate]
         })
         
         st.dataframe(funnel3_data, use_container_width=True)
