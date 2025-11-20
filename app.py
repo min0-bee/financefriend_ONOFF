@@ -33,6 +33,7 @@ def main():
     from ui.components.chat_panel import render as ChatPanel
     from ui.components.sidebar import render as Sidebar
     from ui.components.log_viewer_server import render as LogViewer
+    from ui.components.performance_view import render as PerformanceView
     
     # ① 전역 스타일 & 세션 초기화 (공통 환경 구성) - 즉시 실행 (블로킹 없음)
     inject_styles()
@@ -140,7 +141,7 @@ def main():
 
     with st.sidebar:
         # 모든 사용자가 로그 뷰어 옵션 표시 (멘토링용)
-        view_options = ["뉴스/챗봇", "로그 뷰어"]
+        view_options = ["뉴스/챗봇", "성능 분석", "로그 뷰어"]
         
         current_view = st.session_state.get("main_view", "뉴스/챗봇")
         
@@ -153,6 +154,10 @@ def main():
     if st.session_state["main_view"] == "로그 뷰어":
         st.title("📚 내부 로그 뷰어")
         LogViewer()
+        return
+    
+    if st.session_state["main_view"] == "성능 분석":
+        PerformanceView()
         return
 
     # ② 페이지 기본 레이아웃 분할 (7:3 비율)
@@ -186,9 +191,7 @@ def main():
     with col_chat:
         # 텍스트 사전이 준비되었는지 확인
         if st.session_state.get("terms_initialized", False):
-            # 최적화 기능 활성화 (스트리밍, 캐싱, 병렬 처리 등)
-            enable_optimization = st.session_state.get("enable_chat_optimization", True)
-            ChatPanel(st.session_state.financial_terms, use_openai=USE_OPENAI, enable_optimization=enable_optimization)
+            ChatPanel(st.session_state.financial_terms, use_openai=USE_OPENAI)
         else:
             # 아직 초기화 중이면 간단한 메시지만 표시 (블로킹 없음)
             st.info("💡 금융 용어 사전을 불러오는 중...")

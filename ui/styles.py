@@ -43,13 +43,6 @@ CSS = """
     line-height: 1.8;              /* 줄 간격 넉넉하게 */
 }
 
-<<<<<<< HEAD
-/* 💬 챗봇 메시지 공통 스타일 */
-.chat-message {
-    padding: 10px;
-    border-radius: 10px;
-    margin: 5px 0;                 /* 메시지 간격 */
-=======
 /* 💬 챗봇 메시지 컨테이너 */
 .chat-message-container {
     padding-right: 4px;
@@ -149,7 +142,63 @@ CSS = """
 [data-testid="column"]:has(.chat-message-container) button {
     margin: 5px 15px 10px 15px !important;
     padding: 8px 12px !important;
->>>>>>> 181a128 (fix: 梨쀫큸 ?ш린 怨좎젙 諛??대? ?ㅽ겕濡?湲곕뒫 援ы쁽)
+}
+
+/* 💬 챗봇 메시지 행 (chat-row) */
+.chat-row {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    gap: 8px;
+}
+
+.chat-row--user {
+    justify-content: flex-end;
+}
+
+.chat-row--assistant {
+    justify-content: flex-start;
+}
+
+/* 💬 챗봇 아바타 (chat-avatar) */
+.chat-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.chat-avatar--assistant {
+    background: #f0f0f0;
+}
+
+.chat-avatar--user {
+    background: #e3f2fd;
+}
+
+/* 💬 챗봇 말풍선 (chat-bubble) */
+.chat-bubble {
+    max-width: 70%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    word-wrap: break-word;
+    line-height: 1.5;
+}
+
+.chat-bubble--assistant {
+    background: #f5f5f5;
+    color: #333;
+    border-bottom-left-radius: 4px;
+}
+
+.chat-bubble--user {
+    background: #e3f2fd;
+    color: #333;
+    border-bottom-right-radius: 4px;
 }
 
 /* 👤 유저 메시지 (오른쪽 정렬 + 파란색 톤) */

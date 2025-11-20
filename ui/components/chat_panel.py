@@ -8,11 +8,11 @@ import streamlit as st
 from streamlit.components.v1 import html as st_html
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.logger import log_event
-from core.performance import get_performance_tracker
 from rag.glossary import explain_term, search_terms_by_rag
 from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request, search_related_article
 from data.news import parse_news_from_url, search_news_from_supabase
 from persona.persona import albwoong_persona_reply, generate_structured_persona_reply
+from ui.components.performance_panel import get_performance_tracker
 
 
 def get_albwoong_avatar_base64():
@@ -79,14 +79,13 @@ ALBWOONG_OPENERS = [
     "모르는 걸 물어보는 게 진짜 지혜야. 시작해볼까?"
 ]
 
-def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization: bool = True):
+def render(terms: dict[str, dict], use_openai: bool = False):
     """
     챗봇 패널 렌더링
     
     Args:
         terms: 금융 용어 사전 (dict[str, dict])
         use_openai: OpenAI 사용 여부 (기본값: False)
-        enable_optimization: 최적화 기능 활성화 (스트리밍, 캐싱, 병렬 처리 등)
     
     Features:
         - 플로팅 챗봇 UI (우측 하단 고정, 400px × 600px)
@@ -94,8 +93,6 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
         - RAG 기반 응답 생성
         - 질문 유형 자동 판단
         - 구조화된 답변 형식
-        - 성능 측정 및 분석
-        - 스트리밍 응답 수집 (최적화 활성화 시, 수집 후 표시)
     """
     st.markdown("### 💬 금융 용어 도우미")
     
@@ -119,12 +116,6 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
     
     </style>
     """, unsafe_allow_html=True)
-    
-    # 성능 리포트 표시 (최적화 활성화 시)
-    if enable_optimization:
-        with st.expander("📊 성능 분석", expanded=False):
-            from core.performance import render_performance_report
-            render_performance_report()
     
     st.markdown("---")
 
@@ -427,13 +418,18 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
 
     # ⚠️ 중요: 입력창 플레이스홀더에 URL/기사 기능 안내 포함 - 절대 삭제하지 말 것!
     # 입력창 (URL/기사 검색 기능 포함)
+    # 성능 분석 패널 표시
+    tracker = get_performance_tracker()
+    if tracker.steps:
+        tracker.render_panel()
+    
     user_input = st.chat_input("궁금한 금융 용어, URL, 또는 '~에 대해 기사 보여줘'를 입력하세요...")
     if user_input:
         # 성능 측정 시작
-        tracker = get_performance_tracker()
-        profile = tracker.start_profile(user_input, optimization_enabled=enable_optimization)
+        tracker.start()
         
         t0 = time.time()
+        tracker.step("사용자 입력 처리")
         log_event("chat_question", message=user_input, source="chat", surface="sidebar")
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
@@ -444,13 +440,16 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
 
         # ⚠️ 중요: URL/기사 기능 - 절대 삭제하지 말 것!
         # 0) URL 감지 및 처리 (최우선)
+        tracker.step("URL 감지")
         urls = extract_urls_from_text(user_input)
         if urls:
             # 첫 번째 URL 사용
             url = urls[0]
+            tracker.step("URL 파싱")
             with st.spinner("오늘의 경제 뉴스를 가져오는 중..."):
                 try:
                     article = parse_news_from_url(url)
+                    tracker.finish()
                     
                     if article:
                         # 성공 메시지와 함께 버튼 표시
@@ -502,21 +501,23 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                     st.rerun()
             
             # URL 처리 완료 후 함수 종료
-            profile.finish()
-            tracker.finish_current_profile()
             return
 
         # ⚠️ 중요: 기사 찾기 기능 - 절대 삭제하지 말 것!
         # 0-1) 기사 찾기 요청 감지 및 처리
+        tracker.step("기사 검색 요청 감지")
         is_search_request, keyword = detect_article_search_request(user_input)
         if is_search_request and keyword:
+            tracker.step("Supabase 기사 검색")
             with st.spinner(f"오늘 '{keyword}' 관련 기사를 찾는 중..."):
                 # 1단계: Supabase에서 관련 기사 검색
                 supabase_articles = search_news_from_supabase(keyword, limit=5)
+                tracker.step("로컬 기사 검색")
                 
                 # 2단계: 현재 기사 리스트에서도 검색 (오늘 로드된 기사 중)
                 articles = st.session_state.get("news_articles", [])
                 matched_article = search_related_article(articles, keyword)
+                tracker.finish()
                 
                 # 3단계: 모든 결과 병합 (Supabase 결과 + 현재 리스트 결과)
                 all_found_articles = []
@@ -568,21 +569,21 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                     st.rerun()
             
             # 기사 검색 처리 완료 후 함수 종료
-            profile.finish()
-            tracker.finish_current_profile()
             return
 
         # 1) RAG 정확 매칭 우선 (완전 일치 검색)
-        step_rag = profile.add_step("rag_exact_match")
+        tracker.step("RAG 초기화 확인")
         if st.session_state.get("rag_initialized", False):
             try:
                 collection = st.session_state.get("rag_collection")
                 if collection is None:
                     raise ValueError("RAG 컬렉션이 없습니다")
                 
+                tracker.step("RAG 데이터 로드")
                 all_data = collection.get()
 
                 if all_data and all_data['metadatas']:
+                    tracker.step("RAG 정확 매칭 검색")
                     # 정확한 용어 매칭 시도 (조사/문장부호 포함)
                     def _term_exact_match(text: str, term: str) -> bool:
                         if not term:
@@ -613,6 +614,7 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
 
                         # ✅ 최적화: 금융 키워드가 없으면 벡터 검색 생략 (조기 종료)
                         if has_financial_keyword:
+                            tracker.step("RAG 벡터 검색")
                             RAG_SIM_THRESHOLD = 0.38  # 코사인 거리(0~2, 낮을수록 유사)
                             rag_results = search_terms_by_rag(user_input, top_k=1, include_distances=True)
                             if rag_results:
@@ -632,14 +634,12 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
 
                     if matched_term:
                         # RAG에서 찾은 용어로 설명 생성 (RAG 정보 포함)
-                        step_rag.finish()
-                        step_explanation = profile.add_step("rag_explanation_generation")
+                        tracker.step("용어 설명 생성 (RAG)")
                         explanation, rag_info = explain_term(
                             matched_term,
                             st.session_state.chat_history,
                             return_rag_info=True,
                         )
-                        step_explanation.finish()
                         log_event(
                             "glossary_answer",
                             term=matched_term,
@@ -654,14 +654,15 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                         )
             except Exception as e:
                 st.warning(f"⚠️ RAG 검색 중 오류 발생: {e}")
-        step_rag.finish()
 
         # 2) RAG 실패 시: 하드코딩된 사전에서 정확한 매칭 시도
+        tracker.step("하드코딩 사전 검색")
         if explanation is None and not is_financial_question:
             for term_key in terms.keys():
                 lookahead = r"(?=($|\s|[?!.,]|[은는이가을를과와로도의]))"
                 pattern = rf"(^|\s){re.escape(term_key)}{lookahead}"
                 if re.search(pattern, user_input, re.IGNORECASE):
+                    tracker.step("용어 설명 생성 (사전)")
                     explanation, rag_info = explain_term(
                         term_key,
                         st.session_state.chat_history,
@@ -682,6 +683,7 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                     break
 
         # 3) 금융 용어가 아닌 일반 질문: 질문 패턴에 따라 답변 형식 결정
+        tracker.step("질문 패턴 분석")
         if explanation is None and not is_financial_question:
             # 조사 제거 함수
             def remove_particles(term: str) -> str:
@@ -753,6 +755,7 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                     is_term_question = True
                 elif is_definition_question and st.session_state.get("rag_initialized", False):
                     # 정의 질문 패턴이 있고 RAG에서 금융 용어를 찾은 경우만 구조화된 형식
+                    tracker.step("RAG 용어 재검색")
                     try:
                         rag_results = search_terms_by_rag(extracted_term, top_k=1, include_distances=True)
                         if rag_results:
@@ -769,116 +772,27 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                 # 그 외의 경우는 일반 질문으로 처리 (자연스러운 대화 형식)
             
             # 금융 용어 질문이면 구조화된 형식, 일반 질문이면 자연스러운 대화 형식
-            step_llm = profile.add_step("llm_response_generation")
             try:
                 if is_term_question:
                     # 금융 용어 질문: 구조화된 형식 (📘 정의, 💡 영향, 🌟 비유)
-                    if enable_optimization:
-                        # ✅ 최적화: 스트리밍 응답 수집 (수집 후 표시)
-                        try:
-                            stream_gen = generate_structured_persona_reply(
-                                user_input=user_input,
-                                term=extracted_term,
-                                context=None,
-                                temperature=0.2,  # ⚡ 최적화: 0.3 → 0.2 (더 빠른 응답)
-                                stream=True
-                            )
-                            
-                            # 스트리밍 응답 수집 (수집 후 표시 방식)
-                            # Streamlit의 특성상 실시간 스트리밍은 어려우므로, 수집 후 한 번에 표시
-                            full_response = ""
-                            for chunk in stream_gen:
-                                if isinstance(chunk, tuple) and chunk[0] == "__METADATA__":
-                                    # 메타데이터는 무시
-                                    continue
-                                if chunk:
-                                    full_response += str(chunk)
-                            
-                            explanation = full_response.strip() if full_response else None
-                            api_info = {"via": "structured_persona_stream"}
-                            
-                            # 스트리밍 응답이 비어있으면 일반 모드로 fallback
-                            if not explanation or len(full_response) == 0:
-                                explanation = generate_structured_persona_reply(
-                                    user_input=user_input,
-                                    term=extracted_term,
-                                    context=None,
-                                    temperature=0.2,  # ⚡ 최적화: 0.3 → 0.2
-                                    stream=False
-                                )
-                                api_info = {"via": "structured_persona_fallback"}
-                        except Exception as stream_error:
-                            # 스트리밍 실패 시 일반 모드로 fallback
-                            explanation = generate_structured_persona_reply(
-                                user_input=user_input,
-                                term=extracted_term,
-                                context=None,
-                                temperature=0.2,  # ⚡ 최적화: 0.3 → 0.2
-                                stream=False
-                            )
-                            api_info = {"via": "structured_persona_fallback", "stream_error": str(stream_error)}
-                    else:
-                        explanation = generate_structured_persona_reply(
-                            user_input=user_input,
-                            term=extracted_term,
-                            context=None,
-                            temperature=0.2  # ⚡ 최적화: 0.3 → 0.2
-                        )
-                        api_info = {"via": "structured_persona"}
+                    tracker.step("LLM 호출 (구조화된 응답)")
+                    explanation = generate_structured_persona_reply(
+                        user_input=user_input,
+                        term=extracted_term,
+                        context=None,
+                        temperature=0.2
+                    )
+                    api_info = {"via": "structured_persona"}
                 else:
                     # 일반 질문: 자연스러운 대화 형식 (자유로운 답변)
-                    if enable_optimization:
-                        # ✅ 최적화: 스트리밍 응답 수집 (수집 후 표시)
-                        try:
-                            stream_gen = albwoong_persona_reply(
-                                user_input=user_input,
-                                term=None,
-                                context=None,
-                                temperature=0.2,  # ⚡ 최적화: 0.3 → 0.2 (더 빠른 응답)
-                                stream=True
-                            )
-                            
-                            # 스트리밍 응답 수집 (수집 후 표시 방식)
-                            # Streamlit의 특성상 실시간 스트리밍은 어려우므로, 수집 후 한 번에 표시
-                            full_response = ""
-                            for chunk in stream_gen:
-                                if isinstance(chunk, tuple) and chunk[0] == "__METADATA__":
-                                    # 메타데이터는 무시
-                                    continue
-                                if chunk:
-                                    full_response += str(chunk)
-                            
-                            explanation = full_response.strip() if full_response else None
-                            api_info = {"via": "persona_natural_stream"}
-                            
-                            # 스트리밍 응답이 비어있으면 일반 모드로 fallback
-                            if not explanation or len(full_response) == 0:
-                                explanation = albwoong_persona_reply(
-                                    user_input=user_input,
-                                    term=None,
-                                    context=None,
-                                    temperature=0.2,  # ⚡ 최적화: 0.3 → 0.2
-                                    stream=False
-                                )
-                                api_info = {"via": "persona_natural_fallback"}
-                        except Exception as stream_error:
-                            # 스트리밍 실패 시 일반 모드로 fallback
-                            explanation = albwoong_persona_reply(
-                                user_input=user_input,
-                                term=None,
-                                context=None,
-                                temperature=0.2,  # ⚡ 최적화: 0.3 → 0.2
-                                stream=False
-                            )
-                            api_info = {"via": "persona_natural_fallback", "stream_error": str(stream_error)}
-                    else:
-                        explanation = albwoong_persona_reply(
-                            user_input=user_input,
-                            term=None,
-                            context=None,
-                            temperature=0.2  # ⚡ 최적화: 0.3 → 0.2
-                        )
-                        api_info = {"via": "persona_natural"}
+                    tracker.step("LLM 호출 (자연스러운 응답)")
+                    explanation = albwoong_persona_reply(
+                        user_input=user_input,
+                        term=None,
+                        context=None,
+                        temperature=0.2
+                    )
+                    api_info = {"via": "persona_natural"}
             except Exception as e:
                 # LLM 연결 실패 시 fallback
                 try:
@@ -891,11 +805,9 @@ def render(terms: dict[str, dict], use_openai: bool = False, enable_optimization
                     )
                     api_info = {"error": {"type": type(e2).__name__, "message": str(e2)}}
             
-            step_llm.finish()
-
         # 성능 측정 완료
-        profile.finish()
-        tracker.finish_current_profile()
+        tracker.step("응답 처리 완료")
+        tracker.finish()
         
         # 로깅 + 응답 축적
         latency = int((time.time() - t0) * 1000)
