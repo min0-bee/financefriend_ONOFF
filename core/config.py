@@ -5,7 +5,7 @@ LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "events.csv")
 USER_FILE = os.path.join(LOG_DIR, "user_info.json")
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-3.5-turbo"  # ⚡ 최적화: 더 빠른 응답을 위해 gpt-3.5-turbo 사용
 USE_OPENAI = True
 OPENAI_API_KEY = None
 DEFAULT_NEWS_SUMMARY_PROMPT = (
