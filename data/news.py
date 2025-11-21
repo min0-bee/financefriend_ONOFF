@@ -51,13 +51,14 @@ FALLBACK_NEWS = [
 def search_news_from_supabase(keyword: str, limit: int = 5) -> List[Dict]:
     """
     Supabase DB에서 키워드로 관련 뉴스를 검색합니다.
+    점수 기반 검색: title(10점), summary(5점), content(2점) 가중치 적용
     
     Args:
         keyword: 검색 키워드
         limit: 가져올 뉴스 개수 (기본값: 5)
         
     Returns:
-        검색된 뉴스 리스트 (실패 시 빈 리스트)
+        검색된 뉴스 리스트 (점수 높은 순, 최소 점수 5점 이상만)
     """
     if not SUPABASE_ENABLE:
         return []
@@ -67,62 +68,119 @@ def search_news_from_supabase(keyword: str, limit: int = 5) -> List[Dict]:
         return []
     
     try:
-        # news 테이블에서 키워드로 검색
-        # title, summary, content에서 키워드 포함 여부 확인
-        # deleted_at이 NULL인 것만 (삭제되지 않은 뉴스)
-        # published_at 기준 내림차순 정렬 (최신순)
-        
         keyword_lower = keyword.lower()
+        keyword_words = keyword_lower.split()  # 여러 단어로 분리
         
-        # Supabase의 ilike (대소문자 무시) 사용하여 검색
-        # OR 조건: title, summary, content 중 하나라도 키워드를 포함하면 매칭
-        try:
-            # 방법 1: or_ 메서드 사용 (Supabase Python 클라이언트 문법)
-            response = (
-                supabase.table("news")
-                .select("*")
-                .is_("deleted_at", "null")
-                .or_(f"title.ilike.%{keyword}%,summary.ilike.%{keyword}%,content.ilike.%{keyword}%")
-                .order("published_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-        except Exception:
-            # 방법 2: 여러 필터를 각각 시도하고 결과 합치기 (fallback)
-            all_results = []
-            seen_ids = set()
-            
-            for field in ["title", "summary", "content"]:
-                try:
-                    field_response = (
-                        supabase.table("news")
-                        .select("*")
-                        .is_("deleted_at", "null")
-                        .ilike(field, f"%{keyword}%")
-                        .order("published_at", desc=True)
-                        .limit(limit)
-                        .execute()
-                    )
-                    
-                    if field_response.data:
-                        for item in field_response.data:
-                            item_id = item.get("news_id")
-                            if item_id and item_id not in seen_ids:
-                                all_results.append(item)
-                                seen_ids.add(item_id)
-                except Exception:
-                    continue
-            
-            # 날짜순 정렬 및 limit 적용
-            all_results.sort(key=lambda x: x.get("published_at") or x.get("created_at", ""), reverse=True)
-            response = type('obj', (object,), {'data': all_results[:limit]})()
+        # 모든 필드에서 검색 (넓게 가져온 후 점수 계산)
+        all_results = []
+        seen_ids = set()
         
-        if not response.data:
+        # 각 필드별로 검색하여 모든 결과 수집
+        for field in ["title", "summary", "content"]:
+            try:
+                field_response = (
+                    supabase.table("news")
+                    .select("*")
+                    .is_("deleted_at", "null")
+                    .ilike(field, f"%{keyword}%")
+                    .limit(limit * 10)  # 충분히 많이 가져오기
+                    .execute()
+                )
+                
+                if field_response.data:
+                    for item in field_response.data:
+                        item_id = item.get("news_id")
+                        if item_id and item_id not in seen_ids:
+                            all_results.append(item)
+                            seen_ids.add(item_id)
+            except Exception:
+                continue
+        
+        if not all_results:
             return []
+        
+        # 점수 계산 및 정렬
+        scored_news = []
+        for news in all_results:
+            score = 0
+            
+            title = (news.get("title") or "").lower()
+            summary = (news.get("summary") or "").lower()
+            content = (news.get("content") or "").lower()
+            
+            # 키워드가 title에 포함되면 높은 점수
+            if keyword_lower in title:
+                score += 10
+                # 정확히 일치하면 추가 점수
+                if keyword_lower == title.strip():
+                    score += 5
+                # 키워드가 여러 번 나오면 추가 점수
+                count = title.count(keyword_lower)
+                if count > 1:
+                    score += min(count - 1, 3)  # 최대 3점 추가
+            
+            # 키워드가 summary에 포함되면 중간 점수
+            if keyword_lower in summary:
+                score += 5
+                # 키워드가 여러 번 나오면 추가 점수
+                count = summary.count(keyword_lower)
+                if count > 1:
+                    score += min(count - 1, 2)  # 최대 2점 추가
+            
+            # 키워드가 content에 포함되면 낮은 점수
+            if keyword_lower in content:
+                score += 2
+                # 키워드가 여러 번 나오면 추가 점수 (최대 3점)
+                count = content.count(keyword_lower)
+                if count > 1:
+                    score += min((count - 1) // 5, 3)  # 5번마다 1점, 최대 3점
+            
+            # 여러 필드에 모두 포함되면 가산점
+            field_count = sum([
+                1 if keyword_lower in title else 0,
+                1 if keyword_lower in summary else 0,
+                1 if keyword_lower in content else 0
+            ])
+            if field_count >= 2:
+                score += 3  # 2개 이상 필드에 포함되면 가산점
+            
+            # 키워드가 여러 단어인 경우 각 단어 매칭 확인
+            if len(keyword_words) > 1:
+                matched_words = 0
+                for word in keyword_words:
+                    if word in title or word in summary:
+                        matched_words += 1
+                if matched_words > 0:
+                    score += matched_words * 2  # 각 단어당 2점
+            
+            # 최소 점수 5점 이상만 포함
+            if score >= 5:
+                scored_news.append((score, news))
+        
+        # 점수 높은 순으로 정렬 (같은 점수면 최신순)
+        def get_sort_key(item):
+            score, news = item
+            # 날짜 파싱 (안전하게)
+            try:
+                date_str = news.get("published_at") or news.get("created_at")
+                if date_str:
+                    date_str_clean = str(date_str).replace("Z", "+00:00")
+                    date_obj = datetime.fromisoformat(date_str_clean)
+                    timestamp = date_obj.timestamp()
+                else:
+                    timestamp = 0
+            except Exception:
+                timestamp = 0
+            return (-score, -timestamp)  # 점수 내림차순, 최신순
+        
+        scored_news.sort(key=get_sort_key)
+        
+        # 상위 limit개만 선택
+        top_news = [news for _, news in scored_news[:limit]]
         
         # Supabase 응답을 기존 형식으로 변환
         formatted_news = []
-        for news in response.data:
+        for news in top_news:
             # published_at 또는 created_at을 날짜로 변환
             date_str = news.get("published_at") or news.get("created_at")
             if date_str:
