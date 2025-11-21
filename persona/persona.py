@@ -104,6 +104,23 @@ _FEWSHOT_GENERAL: List[Dict[str, str]] = [
         "role": "assistant",
         "content": "안녕! 오늘도 신문을 품에 안고 왔어. 궁금한 경제 이야기가 있으면 편하게 물어봐!"
     },
+    # 예시 5: 일반 대화 (인사, 감사 등)
+    {
+        "role": "user",
+        "content": "안녕"
+    },
+    {
+        "role": "assistant",
+        "content": "안녕! 오늘도 신문을 품에 안고 왔어. 궁금한 경제 이야기가 있으면 편하게 물어봐!"
+    },
+    {
+        "role": "user",
+        "content": "고마워"
+    },
+    {
+        "role": "assistant",
+        "content": "천만에! 도움이 됐다면 다행이야. 더 궁금한 거 있으면 언제든 물어봐!"
+    },
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -184,34 +201,7 @@ def albwoong_persona_reply(
 ) -> str:
     """
     일반 질문 또는 RAG 참고자료 기반 질문 → 일관된 템플릿의 알부엉 답변 생성
-    - term이 있으면: 구조화된 형식 사용
-    - term이 없으면: 자연스러운 대화 형식 사용
-    - stream=True: 스트리밍 응답 반환 (제너레이터)
     """
-    # term이 없으면 자연스러운 대화 형식으로 답변
-    if not term:
-        try:
-            today = _today_kst_str()
-            base_prompt = _system_prompt(today)
-            sys = {"role": "system", "content": base_prompt}
-            dev = {"role": "system", "content": _DEV_RULES}
-            usr = {"role": "user", "content": user_input}
-            
-            # 일반 대화 형식으로 답변 (few-shot 예제 포함)
-            messages = [sys, dev, *_FEWSHOT_GENERAL, usr]
-            # ⚡ 최적화: temperature 0.2로 감소 (더 빠른 응답, 더 일관된 출력)
-            optimized_temp = min(temperature, 0.2)  # 최대 0.2로 제한
-            if stream:
-                return llm_chat(messages, temperature=optimized_temp, max_tokens=350, stream=True)  # ⚡ 최적화: 500 → 350
-            raw = llm_chat(messages, temperature=optimized_temp, max_tokens=350)  # ⚡ 최적화: 500 → 350
-            return raw.strip()
-        except Exception as e:
-            return (
-                f"죄송해! 지금은 답변을 생성하기 어려워. "
-                f"다시 시도하거나 다른 질문을 해줘! (오류: {e})"
-            )
-    
-    # term이 있으면 구조화된 형식 사용
     return generate_structured_persona_reply(
         user_input=user_input,
         term=term,
@@ -476,9 +466,6 @@ def generate_structured_persona_reply(
 ) -> str:
     """
     구조화된 템플릿을 따르는 알부엉 답변 생성 (RAG/일반 공용)
-    - term이 있으면: 구조화된 형식 (📘 정의, 💡 영향, 🌟 비유) - 각 섹션 3~4 문장으로 초보자용 간결하게
-    - term이 없어도: 구조화된 형식으로 답변 (RAG 답변과 일관성 유지)
-    - stream=True: 스트리밍 응답 반환 (제너레이터)
     """
     # term이 없어도 구조화된 형식으로 답변 (RAG 답변과 일관성 유지)
     # term이 있으면 구조화된 형식으로 답변 (정의, 영향, 비유 각 3~4 문장)
@@ -488,12 +475,7 @@ def generate_structured_persona_reply(
             term=term,  # term이 없어도 None으로 전달하여 구조화된 형식으로 답변
             context=context,
         )
-        # ⚡ 최적화: temperature 0.2로 감소 (더 빠른 응답, 더 일관된 출력)
-        optimized_temp = min(temperature, 0.2)  # 최대 0.2로 제한
-        if stream:
-            # 스트리밍 모드: 제너레이터 반환
-            return llm_chat(messages, temperature=optimized_temp, max_tokens=300, stream=True)  # ⚡ 최적화: 400 → 300
-        raw = llm_chat(messages, temperature=optimized_temp, max_tokens=300)  # ⚡ 최적화: 400 → 300
+        raw = llm_chat(messages, temperature=temperature, max_tokens=700)
         structured = _parse_structured_response(raw)
         return _format_structured_output(structured, term, user_input)
     except Exception as e:

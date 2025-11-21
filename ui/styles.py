@@ -223,6 +223,102 @@ CSS = """
 /* 💬 챗봇 메시지 컨테이너 */
 .chat-message-container {
     padding-right: 4px;
+    min-height: 300px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 화면을 꽉 채우기 위한 전체 레이아웃 조정 */
+.main .block-container {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+    max-width: 100%;
+}
+
+/* Streamlit 컬럼이 화면 높이를 최대한 활용하도록 */
+[data-testid="column"] {
+    display: flex;
+    flex-direction: column;
+}
+
+/* 챗봇 컨테이너 - 우측 하단 플로팅 형태 (화면에 고정) */
+[data-testid="column"]:has(#chat-scroll-box),
+[data-testid="column"]:has(.chat-message-container) {
+    position: fixed !important; /* 요소를 뷰포트에 고정 */
+    bottom: 20px !important;    /* 화면 하단에서 20px 위로 */
+    right: 20px !important;     /* 화면 오른쪽에서 20px 왼쪽으로 */
+    z-index: 1000 !important;  /* 다른 요소들 위에 표시되도록 설정 */
+    width: 400px !important;
+    height: 600px !important;
+    background: #ffffff !important;
+    border-radius: 10px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+}
+
+/* 메인 컨텐츠 영역 - 플로팅 챗봇이므로 여백 불필요 */
+.main .block-container {
+    padding-right: 0 !important;
+    max-width: 100% !important;
+}
+
+/* 메인 컬럼 (뉴스 영역) - 전체 너비 사용 */
+[data-testid="column"]:not(:has(#chat-scroll-box)):not(:has(.chat-message-container)) {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
+/* Streamlit 기본 사이드바와 챗봇 사이드바가 겹치지 않도록 */
+[data-testid="stSidebar"] {
+    z-index: 101 !important; /* Streamlit 사이드바가 챗봇 사이드바 위에 */
+}
+
+/* 챗 패널 영역 (chatbox) - 플로팅 챗봇 내부 스크롤 영역 */
+#chat-scroll-box {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    padding: 10px !important;
+    overflow-y: auto !important;
+    min-height: 0 !important;
+    max-height: calc(600px - 120px) !important; /* 전체 높이에서 제목/입력창 제외 */
+}
+
+/* 챗봇 제목 영역 */
+[data-testid="column"]:has(#chat-scroll-box) h3,
+[data-testid="column"]:has(.chat-message-container) h3 {
+    margin: 0 !important;
+    padding: 15px 15px 10px 15px !important;
+    border-bottom: 1px solid #eee !important;
+    font-size: 1rem !important;
+}
+
+/* 챗봇 구분선 */
+[data-testid="column"]:has(#chat-scroll-box) hr,
+[data-testid="column"]:has(.chat-message-container) hr {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    border-bottom: 1px solid #eee !important;
+}
+
+/* 챗봇 입력 영역 */
+[data-testid="column"]:has(#chat-scroll-box) [data-testid="stChatInput"],
+[data-testid="column"]:has(.chat-message-container) [data-testid="stChatInput"] {
+    border-top: 1px solid #ccc !important;
+    padding: 12px !important;
+    margin: 0 !important;
+}
+
+/* 챗봇 초기화 버튼 */
+[data-testid="column"]:has(#chat-scroll-box) button,
+[data-testid="column"]:has(.chat-message-container) button {
+    margin: 5px 15px 10px 15px !important;
+    padding: 8px 12px !important;
 }
 
 .chat-row {

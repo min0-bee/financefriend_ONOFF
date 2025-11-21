@@ -1218,6 +1218,11 @@ def search_terms_by_rag(query: str, top_k: int = 1, include_distances: bool = Fa
             if perf_enabled:
                 step_start = _perf_step(perf_enabled, perf_steps, "encode", step_start)
 
+        # 거리 정보 포함 여부에 따라 include 파라미터 설정
+        include = ["metadatas"]
+        if include_distances:
+            include.append("distances")
+
         results = collection.query(
             query_embeddings=[query_embedding.tolist()],
             n_results=top_k,
@@ -1228,8 +1233,12 @@ def search_terms_by_rag(query: str, top_k: int = 1, include_distances: bool = Fa
 
         matched_terms = []
         if results and results['metadatas']:
-            for metadata in results['metadatas'][0]:
-                matched_terms.append(metadata)
+            for i, metadata in enumerate(results['metadatas'][0]):
+                term_data = metadata.copy()
+                # 거리 정보가 있으면 추가
+                if include_distances and results.get('distances') and results['distances'][0]:
+                    term_data['_distance'] = results['distances'][0][i]
+                matched_terms.append(term_data)
         if perf_enabled:
             step_start = _perf_step(perf_enabled, perf_steps, "format", step_start)
             perf_steps.append({"step": "total", "ms": round((time.perf_counter() - total_start) * 1000, 2), "info": {"top_k": top_k, "returned": len(matched_terms)}})
