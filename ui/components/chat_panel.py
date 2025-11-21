@@ -9,7 +9,7 @@ from streamlit.components.v1 import html as st_html
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.logger import log_event
 from rag.glossary import explain_term, search_terms_by_rag
-from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request, search_related_article
+from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request
 from data.news import parse_news_from_url, search_news_from_supabase
 from persona.persona import albwoong_persona_reply, generate_structured_persona_reply
 
@@ -186,6 +186,12 @@ def render(terms: dict[str, dict], use_openai: bool = False):
         # 가장 최근 메시지의 기사 버튼만 표시
         msg_idx, articles = article_buttons[-1]
         
+        # 검색 키워드 가져오기 (해당 메시지에서)
+        search_keyword = None
+        if msg_idx < len(st.session_state.chat_history):
+            message = st.session_state.chat_history[msg_idx]
+            search_keyword = message.get("search_keyword")
+        
         st.markdown("---")
         st.caption("📰 찾은 기사:")
         for article in articles[:5]:  # 최대 5개만 표시
@@ -197,7 +203,19 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                 key=f"article_btn_{article_id}_{msg_idx}",
                 use_container_width=True
             ):
+                # 버튼 클릭 시 기사 선택 및 로그 기록
                 st.session_state.selected_article = article
+                log_event(
+                    "news_click_from_chat",
+                    news_id=article_id,
+                    source="chat_search",
+                    surface="sidebar",
+                    payload={
+                        "article_id": article_id,
+                        "article_title": article_title,
+                        "search_keyword": search_keyword
+                    }
+                )
                 st.rerun()
     
     st_html(
@@ -493,25 +511,14 @@ def render(terms: dict[str, dict], use_openai: bool = False):
         is_search_request, keyword = detect_article_search_request(user_input)
         if is_search_request and keyword:
             with st.spinner(f"🔍 '{keyword}' 관련 뉴스를 찾는 중..."):
-                # 1단계: Supabase에서 관련 뉴스 검색
-                supabase_articles = search_news_from_supabase(keyword, limit=5)
+                # Supabase DB 전체에서 관련 뉴스 검색 (메인 기사와 무관하게 DB 전체 검색)
+                supabase_articles = search_news_from_supabase(keyword, limit=20)
                 
-                # 2단계: 현재 뉴스 리스트에서도 검색 (이미 로드된 뉴스 중에서)
-                articles = st.session_state.get("news_articles", [])
-                matched_article = search_related_article(articles, keyword)
-                
-                # 3단계: 모든 결과 합치기 (Supabase 결과 + 현재 리스트 결과)
+                # 검색 결과 정리 (중복 제거)
                 all_found_articles = []
                 seen_ids = set()
                 
-                # 현재 리스트에서 찾은 기사 추가
-                if matched_article:
-                    article_id = matched_article.get("id")
-                    if article_id and article_id not in seen_ids:
-                        all_found_articles.append(matched_article)
-                        seen_ids.add(article_id)
-                
-                # Supabase에서 찾은 기사 추가
+                # DB에서 찾은 기사 추가 (메인에 표시된 기사와 상관없이 모든 결과 포함)
                 for article in supabase_articles:
                     article_id = article.get("id")
                     if article_id and article_id not in seen_ids:
@@ -544,7 +551,6 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                             "found_count": article_count,
                             "source": "chat",
                             "supabase_results": len(supabase_articles),
-                            "local_results": 1 if matched_article else 0,
                             "article_ids": found_article_ids  # 검색된 기사 ID 목록
                         }
                     )

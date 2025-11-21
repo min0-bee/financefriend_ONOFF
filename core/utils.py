@@ -421,6 +421,9 @@ def detect_article_search_request(text: str) -> tuple[bool, str]:
             keyword = match.group(1).strip()
             # 조사 제거 (은/는/이/가/을/를/에/의 등)
             keyword = re.sub(r'\s*(은|는|이|가|을|를|에|의|와|과|로|으로)\s*$', '', keyword)
+            # "관련", "관한", "대한" 같은 단어 제거 (검색 키워드에서)
+            keyword = re.sub(r'\s*(관련|관한|대한|대해|관해)\s*$', '', keyword)
+            keyword = re.sub(r'^\s*(관련|관한|대한|대해|관해)\s*', '', keyword)
             if keyword and len(keyword) > 1:  # 최소 2글자 이상
                 return True, keyword
     
