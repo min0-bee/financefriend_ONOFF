@@ -430,6 +430,42 @@ def detect_article_search_request(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+def detect_inappropriate_question(text: str) -> bool:
+    """
+    투자 조언, 로또 번호 등 부적절한 질문인지 감지합니다.
+    
+    Args:
+        text: 사용자 입력 텍스트
+        
+    Returns:
+        부적절한 질문이면 True
+    """
+    if not text or not text.strip():
+        return False
+    
+    text_lower = text.lower()
+    
+    # 투자 조언 요청 패턴
+    investment_patterns = [
+        r'어디에.*투자|어디.*투자|투자.*어디|어떤.*투자|무엇.*투자',
+        r'투자.*추천|추천.*투자|투자.*어때|어떻게.*투자',
+        r'주식.*살까|살까.*주식|어떤.*주식|무엇.*주식',
+        r'어디.*살까|무엇.*살까|어떤.*살까',
+        r'로또.*번호|번호.*로또|로또.*뽑|뽑.*로또',
+        r'복권.*번호|번호.*복권',
+        r'당첨.*번호|당첨.*예측',
+        r'투자.*조언|조언.*투자|투자.*상담',
+        r'어떤.*좋아|무엇.*좋아|어떤게.*좋아',
+        r'어떤.*사|무엇.*사|어떤거.*사',
+    ]
+    
+    for pattern in investment_patterns:
+        if re.search(pattern, text_lower):
+            return True
+    
+    return False
+
+
 def search_related_article(articles: list[dict], keyword: str) -> dict | None:
     """
     뉴스 리스트에서 키워드와 관련된 기사를 찾습니다.

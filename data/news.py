@@ -155,11 +155,39 @@ def search_news_from_supabase(keyword: str, limit: int = 5) -> List[Dict]:
             
             # 최소 점수 5점 이상만 포함
             if score >= 5:
-                scored_news.append((score, news))
+                # 최신성 점수 계산 (오늘 기준)
+                recency_score = 0
+                try:
+                    date_str = news.get("published_at") or news.get("created_at")
+                    if date_str:
+                        date_str_clean = str(date_str).replace("Z", "+00:00")
+                        news_date = datetime.fromisoformat(date_str_clean)
+                        today = datetime.now(news_date.tzinfo) if news_date.tzinfo else datetime.now()
+                        days_diff = (today - news_date.replace(tzinfo=None)).days
+                        
+                        # 최신성 점수 계산 (최대 10점)
+                        if days_diff == 0:
+                            recency_score = 10  # 오늘
+                        elif days_diff == 1:
+                            recency_score = 8   # 어제
+                        elif days_diff <= 3:
+                            recency_score = 6   # 2-3일 전
+                        elif days_diff <= 7:
+                            recency_score = 4   # 1주일 전
+                        elif days_diff <= 30:
+                            recency_score = 2   # 1개월 전
+                        else:
+                            recency_score = 1   # 1개월 이상
+                except Exception:
+                    recency_score = 0
+                
+                # 최종 점수 = 관련성 점수 + 최신성 점수
+                total_score = score + recency_score
+                scored_news.append((total_score, score, recency_score, news))
         
-        # 점수 높은 순으로 정렬 (같은 점수면 최신순)
+        # 최종 점수 높은 순으로 정렬 (같은 점수면 최신순)
         def get_sort_key(item):
-            score, news = item
+            total_score, relevance_score, recency_score, news = item
             # 날짜 파싱 (안전하게)
             try:
                 date_str = news.get("published_at") or news.get("created_at")
@@ -171,12 +199,12 @@ def search_news_from_supabase(keyword: str, limit: int = 5) -> List[Dict]:
                     timestamp = 0
             except Exception:
                 timestamp = 0
-            return (-score, -timestamp)  # 점수 내림차순, 최신순
+            return (-total_score, -timestamp)  # 최종 점수 내림차순, 최신순
         
         scored_news.sort(key=get_sort_key)
         
         # 상위 limit개만 선택
-        top_news = [news for _, news in scored_news[:limit]]
+        top_news = [news for _, _, _, news in scored_news[:limit]]
         
         # Supabase 응답을 기존 형식으로 변환
         formatted_news = []

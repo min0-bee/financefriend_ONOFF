@@ -9,7 +9,7 @@ from streamlit.components.v1 import html as st_html
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.logger import log_event
 from rag.glossary import explain_term, search_terms_by_rag
-from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request
+from core.utils import llm_chat, extract_urls_from_text, detect_article_search_request, detect_inappropriate_question
 from data.news import parse_news_from_url, search_news_from_supabase
 from persona.persona import albwoong_persona_reply, generate_structured_persona_reply
 
@@ -477,7 +477,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                         
                         st.rerun()
                     else:
-                        explanation = "❌ 기사를 가져올 수 없었어요. URL을 확인해주세요. 🦉"
+                        explanation = "❌ 기사를 가져올 수 없었어. URL을 확인해줘. 🦉"
                         st.session_state.chat_history.append({"role": "assistant", "content": explanation})
                         log_event(
                             "news_url_add_error",
@@ -528,7 +528,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                 if all_found_articles:
                     # 찾은 기사들을 챗 히스토리에 특별한 형식으로 저장
                     article_count = len(all_found_articles)
-                    explanation = f"✅ '{keyword}' 관련 최신 기사를 {article_count}개 찾았어! 아래 버튼에서 선택해줘!🦉"
+                    explanation = f"✅ '{keyword}' 관련 뉴스를 추천해줄게! 아래 버튼에서 선택해줘!🦉"
                     
                     # 챗 히스토리에 메시지와 기사 목록 저장 (검색 키워드도 함께 저장)
                     st.session_state.chat_history.append({
@@ -558,7 +558,7 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                     st.rerun()
                 else:
                     # 기사를 찾지 못함
-                    explanation = f"❌ '{keyword}'와 관련된 기사를 찾지 못했어요. 다른 키워드로 시도해보세요. 🦉"
+                    explanation = f"'{keyword}'와 관련된 기사는 찾지 못했어. 다른 키워드로 시도해봐."
                     st.session_state.chat_history.append({"role": "assistant", "content": explanation})
                     log_event(
                         "news_search_failed",
@@ -572,6 +572,21 @@ def render(terms: dict[str, dict], use_openai: bool = False):
                     st.rerun()
             
             # 기사 찾기 처리 완료 후 함수 종료
+            return
+
+        # 🚫 부적절한 질문 감지 (투자 조언, 로또 번호 등)
+        if detect_inappropriate_question(user_input):
+            explanation = "미안해, 나는 기초 금융 지식 도우미라서 그런 질문에는 대답하기 곤란해. 대신 금융 용어나 경제 뉴스에 대해 물어보면 친절하게 알려줄게!"
+            st.session_state.chat_history.append({"role": "assistant", "content": explanation})
+            log_event(
+                "inappropriate_question_rejected",
+                surface="sidebar",
+                message=user_input,
+                payload={
+                    "reason": "투자 조언 또는 부적절한 질문"
+                }
+            )
+            st.rerun()
             return
 
         explanation = None
