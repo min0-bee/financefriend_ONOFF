@@ -27,6 +27,7 @@ def render():
         # ✅ 성능 측정: 하이라이트 처리 시간
         article_id = article.get("id")
         content = article['content']
+<<<<<<< HEAD
         
         # 컨텐츠에 문단 구분이 없으면 자동으로 문단 생성
         if content:
@@ -70,6 +71,17 @@ def render():
         highlight_start = time.time()
         # ✅ 성능 개선: 하이라이트 처리에서 발견된 용어도 함께 받아서 재사용
         result = highlight_terms(content, article_id=str(article_id) if article_id else None, return_matched_terms=True)
+=======
+        highlight_start = time.time()
+        # ✅ 성능 개선: 하이라이트 처리에서 발견된 용어도 함께 받아서 재사용
+        # ⚡ 문맥 인식 활성화: use_context_filter=True로 명시적으로 설정
+        result = highlight_terms(
+            content, 
+            article_id=str(article_id) if article_id else None, 
+            return_matched_terms=True,
+            use_context_filter=True  # ⚡ 문맥 인식 활성화
+        )
+>>>>>>> origin/mjy
         if isinstance(result, tuple):
             highlighted_content, matched_terms_from_highlight = result
         else:
