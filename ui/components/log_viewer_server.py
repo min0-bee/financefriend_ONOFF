@@ -329,7 +329,7 @@ def _fetch_news_from_supabase(limit: int = 1000) -> pd.DataFrame:
         return pd.DataFrame()
 
 def _fetch_event_logs_from_supabase(user_id: Optional[str] = None, limit: int = 1000) -> pd.DataFrame:
-    """Supabase에서 event_logs 데이터 가져오기"""
+    """Supabase에서 event_logs 데이터 가져오기 (페이지네이션 지원)"""
     if not SUPABASE_ENABLE:
         return pd.DataFrame()
     
@@ -338,20 +338,50 @@ def _fetch_event_logs_from_supabase(user_id: Optional[str] = None, limit: int = 
         return pd.DataFrame()
     
     try:
-        query = supabase.table("event_logs").select("*")
+        all_data = []
+        page_size = 1000  # Supabase 기본 limit
+        offset = 0
         
-        if user_id:
-            query = query.eq("user_id", user_id)
+        # limit이 999999 이상이면 전체 데이터를 가져오기 위해 페이지네이션 사용
+        fetch_all = (limit >= 999999)
         
-        query = query.order("event_time", desc=True)
-        # Supabase의 기본 limit이 1000이므로 명시적으로 limit 설정
-        if limit > 0:
-            query = query.limit(limit)
+        while True:
+            query = supabase.table("event_logs").select("*")
+            
+            if user_id:
+                query = query.eq("user_id", user_id)
+            
+            query = query.order("event_time", desc=True)
+            
+            if fetch_all:
+                # 전체 데이터를 가져오기 위해 페이지네이션 사용
+                query = query.range(offset, offset + page_size - 1)
+            else:
+                # 지정된 limit만큼만 가져오기
+                remaining = limit - len(all_data)
+                if remaining <= 0:
+                    break
+                query = query.range(offset, offset + min(remaining, page_size) - 1)
+            
+            response = query.execute()
+            
+            if not response.data:
+                break
+            
+            all_data.extend(response.data)
+            
+            # 가져온 데이터가 page_size보다 적으면 마지막 페이지
+            if len(response.data) < page_size:
+                break
+            
+            # limit이 지정되어 있고 이미 충분히 가져왔으면 중단
+            if not fetch_all and len(all_data) >= limit:
+                break
+            
+            offset += page_size
         
-        response = query.execute()
-        
-        if response.data:
-            df = pd.DataFrame(response.data)
+        if all_data:
+            df = pd.DataFrame(all_data)
             if "event_time" in df.columns:
                 df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
             if "payload" in df.columns:
@@ -485,8 +515,8 @@ def render(show_mode: str = "dashboard"):
     # Supabase에서 이벤트 로그 가져오기
     with st.spinner("🔄 Supabase에서 이벤트 로그를 가져오는 중..."):
         # 전체 데이터를 가져오기 위해 limit을 충분히 크게 설정
-        # 전체 데이터가 4000개 정도이므로 limit을 더 크게 설정
-        df = _fetch_event_logs_from_supabase(user_id=None, limit=10000)  # 5000 -> 10000으로 증가
+        # news 데이터와 동일하게 limit=999999로 설정하여 전체 데이터 가져오기
+        df = _fetch_event_logs_from_supabase(user_id=None, limit=999999)
 
         if df.empty:
             st.info("📭 아직 이벤트 로그가 없습니다. 앱을 사용하면 데이터가 수집됩니다.")
