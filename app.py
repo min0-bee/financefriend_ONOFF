@@ -33,6 +33,7 @@ def main():
     from ui.components.chat_panel import render as ChatPanel
     from ui.components.sidebar import render as Sidebar
     from ui.components.log_viewer_server import render as LogViewer
+    from ui.components.performance_view import render as PerformanceView
     
     # ① 전역 스타일 & 세션 초기화 (공통 환경 구성) - 즉시 실행 (블로킹 없음)
     inject_styles()

@@ -196,11 +196,103 @@ def ensure_financial_terms():
 
 
 # ─────────────────────────────────────────────────────────────
-# ✨ 본문에서 금융 용어 하이라이트 (RAG 통합 버전)
+# 🔍 문맥 인식 함수: 문맥상 경제 용어인지 판단
+# ─────────────────────────────────────────────────────────────
+def is_financial_context(text: str, term: str, match_start: int, match_end: int, window_size: int = 50) -> bool:
+    """
+    문맥 윈도우 내에 경제 관련 키워드가 있는지 확인하여 경제 용어인지 판단
+    - CSV에서 추출한 용어별 키워드를 활용하여 더 정확한 판단
+    
+    Args:
+        text: 전체 텍스트
+        term: 확인할 용어
+        match_start: 매칭된 위치 시작
+        match_end: 매칭된 위치 끝
+        window_size: 주변 문맥 크기 (문자 수)
+    
+    Returns:
+        경제 용어로 사용된 경우 True
+    """
+    # 주변 문맥 추출
+    context_start = max(0, match_start - window_size)
+    context_end = min(len(text), match_end + window_size)
+    context = text[context_start:context_end].lower()
+    
+    # 기본 금융 키워드 사용
+    term_keywords = set(BASE_FINANCIAL_KEYWORDS)
+    
+    # 🚫 부정 키워드 체크: 문맥에 부정 키워드가 있으면 경제 용어가 아님
+    context_lower = context.lower()
+    
+    # ⚠️ 특별 패턴 체크: "대상 종가" 같은 브랜드명 패턴
+    # "대상" 바로 앞뒤에 "종가"가 있으면 무조건 브랜드명
+    if term.lower() == '종가':
+        # "대상 종가" 또는 "종가" 앞뒤에 "대상"이 있는지 확인
+        target_pattern = r'\b대상\s*종가\b|\b종가\s*대상\b'
+        if re.search(target_pattern, context_lower, re.IGNORECASE):
+            return False  # 브랜드명으로 판단
+    
+    # 브랜드/회사명 관련 부정 키워드만 체크 (더 엄격)
+    brand_negative_keywords = ['대상', '종가', '삼성', 'LG', '현대', '기아', 'SK', '롯데', '신세계', '브랜드', '회사', '기업명', '상표', '제품명', '김치', '수출', '수입']
+    
+    # 부정 키워드가 문맥에 있는지 확인
+    found_negative_keyword = None
+    for neg_keyword in brand_negative_keywords:
+        # 단어 경계를 고려한 매칭 (더 정확함)
+        neg_pattern = r'\b' + re.escape(neg_keyword.lower()) + r'\b'
+        if re.search(neg_pattern, context_lower):
+            # 용어 자체가 부정 키워드인 경우는 제외 (예: "관세"는 부정 키워드이지만 경제 용어)
+            if neg_keyword.lower() != term.lower():
+                found_negative_keyword = neg_keyword
+                break
+    
+    # 부정 키워드가 발견된 경우
+    if found_negative_keyword:
+        # 강한 경제 키워드가 있는지 확인 (부정 키워드보다 우선순위가 높음)
+        strong_financial_keywords = ['코스피', '코스닥', '주가', '장', '마감', '거래', '가격', '지수', '시장', '투자', '금융', '경제', '상승', '하락', '변동', '매매', '체결', '호가']
+        has_financial_keyword = False
+        for fin_keyword in strong_financial_keywords:
+            fin_pattern = r'\b' + re.escape(fin_keyword.lower()) + r'\b'
+            if re.search(fin_pattern, context_lower):
+                has_financial_keyword = True
+                break
+        
+        # 부정 키워드가 있고 명확한 경제 키워드가 없으면 False
+        # 단, "수출", "국가" 같은 일반 단어는 경제 키워드로 인정하지 않음
+        if not has_financial_keyword:
+            return False
+    
+    # 주변 문맥에 용어별 관련 키워드가 있는지 확인
+    # ⚠️ 중요: 용어 자체는 제외 (용어가 문맥에 있다고 해서 경제 용어인 것은 아님)
+    # 예: "대상 종가"에서 "종가"가 있지만, "장", "마감", "거래", "가격", "주가", "코스피" 같은 키워드가 없으면 경제 용어가 아님
+    
+    # 키워드 매칭을 더 엄격하게: 단어 경계 고려
+    found_financial_keywords = []
+    for keyword in term_keywords:
+        if keyword and len(keyword) > 0 and keyword.lower() != term.lower():
+            # 단어 경계를 고려한 매칭 (더 정확함)
+            keyword_pattern = r'\b' + re.escape(keyword.lower()) + r'\b'
+            if re.search(keyword_pattern, context_lower):
+                found_financial_keywords.append(keyword)
+                return True  # 경제 관련 키워드가 문맥에 있으면 경제 용어로 판단
+    
+    # 기본 경제 키워드도 확인 (용어별 키워드에 없을 경우)
+    for keyword in BASE_FINANCIAL_KEYWORDS:
+        if keyword and len(keyword) > 0 and keyword.lower() != term.lower():
+            # 단어 경계를 고려한 매칭
+            keyword_pattern = r'\b' + re.escape(keyword.lower()) + r'\b'
+            if re.search(keyword_pattern, context_lower):
+                return True
+    
+    # 문맥에 경제 관련 키워드가 없으면 경제 용어가 아님
+    return False
+
+# ✨ 본문에서 금융 용어 하이라이트 (RAG 통합 버전 + 문맥 인식)
 # - 변경 사항:
 #   1. 기존: st.session_state.financial_terms 사전에서만 검색
 #   2. 신규: RAG에 저장된 모든 용어를 하이라이트 대상으로 사용
 #   3. Fallback: RAG 미초기화 시 기존 사전 사용
+#   4. ⚡ 문맥 인식: 문맥상 경제 용어가 아닌 경우 하이라이트 제외
 # - 기사 본문 텍스트에서 용어를 찾아 <mark> 태그로 감싸 강조
 # - 대소문자 무시(re.IGNORECASE) → 영문 약어 등에도 대응
 # - data-term 속성: 추후 JS/이벤트 연결 시 어떤 용어인지 식별 용이
@@ -800,8 +892,17 @@ def initialize_rag_system():
 # - 사용자 질문을 벡터화하여 유사한 용어 검색
 # - 상위 k개의 관련 용어 반환
 # ─────────────────────────────────────────────────────────────
-def search_terms_by_rag(query: str, top_k: int = 3) -> List[Dict]:
-    """RAG를 사용하여 질문과 관련된 금융 용어 검색"""
+def search_terms_by_rag(query: str, top_k: int = 1, include_distances: bool = False) -> List[Dict]:
+    """RAG를 사용하여 질문과 관련된 금융 용어 검색
+    
+    Args:
+        query: 검색할 질문 또는 용어
+        top_k: 반환할 상위 k개 결과
+        include_distances: True일 경우 거리 정보도 포함하여 반환
+    
+    Returns:
+        검색된 용어 메타데이터 리스트 (include_distances=True일 경우 거리 정보 포함)
+    """
 
     if not st.session_state.get("rag_initialized", False):
         return []

@@ -5,7 +5,6 @@ from core.config import API_ENABLE, API_BASE_URL, SUPABASE_ENABLE
 def render(terms: dict[str, dict]):
     with st.sidebar:
         
-        
         # API 전송 상태 표시
         if API_ENABLE:
             api_status = st.session_state.get("api_send_status", {"success": 0, "failed": 0})
