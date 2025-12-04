@@ -40,11 +40,10 @@ def main():
     
     # ② 최소한의 앱 초기화 (뉴스 로드는 백그라운드로)
     from core.user import init_session_and_user
-    
-    # 세션 및 사용자 초기화만 먼저 (빠름, 블로킹 없음)
-    if not st.session_state.get("user_initialized", False):
-        init_session_and_user()
-        st.session_state["user_initialized"] = True
+
+    # 세션 및 사용자 초기화 - 매번 호출하여 URL 변경 감지
+    # user_id는 URL/localStorage에서 가져오므로 매번 업데이트 필요
+    init_session_and_user()
     
     # 세션 상태 기본값 설정 (빠름)
     st.session_state.setdefault("selected_article", None)
@@ -63,72 +62,35 @@ def main():
     
     # 뉴스 데이터가 없으면 먼저 동기적으로 빠르게 시도 (캐시 히트 시 즉시)
     # 실제 Supabase 뉴스를 우선적으로 로드 (Fallback 사용 안 함)
-    if not st.session_state.news_articles and not st.session_state.get("news_loading", False):
-        st.session_state["news_loading"] = True
+    if not st.session_state.news_articles:
         try:
             # 먼저 동기적으로 시도 (캐시 히트 시 즉시 로드, Fallback 사용 안 함)
             news = load_news_cached(use_fallback=False)
             if news and len(news) > 0:
                 # 실제 Supabase 뉴스가 있으면 즉시 사용
                 st.session_state.news_articles = news
-                st.session_state["news_loading"] = False
             else:
-                # 뉴스가 없으면 백그라운드에서 재시도 (Supabase 연결 재확인)
-                def _load_news_async():
-                    try:
-                        # Supabase에서 실제 뉴스 로드 시도 (Fallback 사용 안 함)
-                        news_retry = load_news_cached(use_fallback=False)
-                        if news_retry and len(news_retry) > 0:
-                            # 실제 뉴스가 있으면 사용
-                            st.session_state.news_articles = news_retry
-                        else:
-                            # Supabase에서 뉴스를 가져올 수 없을 때만 Fallback 사용
-                            # (연결 실패 또는 뉴스가 실제로 없을 때)
-                            print("⚠️ Supabase에서 뉴스를 가져올 수 없어 Fallback 데이터를 사용합니다.")
-                            st.session_state.news_articles = FALLBACK_NEWS
-                    except Exception as e:
-                        # 에러 발생 시 Supabase 연결 실패로 간주하고 Fallback 사용
-                        print(f"⚠️ 뉴스 로드 실패: {e}, Fallback 데이터 사용")
-                        st.session_state.news_articles = FALLBACK_NEWS
-                    finally:
-                        st.session_state["news_loading"] = False
-                threading.Thread(target=_load_news_async, daemon=True).start()
+                # 캐시가 없거나 빈 결과인 경우 Fallback 사용
+                # (첫 접속 시 빈 화면 방지)
+                st.session_state.news_articles = FALLBACK_NEWS
         except Exception as e:
-            # 첫 시도 실패 시 백그라운드에서 재시도
-            print(f"⚠️ 뉴스 로드 첫 시도 실패: {e}, 백그라운드에서 재시도")
-            def _load_news_async():
-                try:
-                    # Supabase에서 실제 뉴스 로드 시도 (Fallback 사용 안 함)
-                    news = load_news_cached(use_fallback=False)
-                    if news and len(news) > 0:
-                        st.session_state.news_articles = news
-                    else:
-                        # Supabase에서 뉴스를 가져올 수 없을 때만 Fallback 사용
-                        print("⚠️ Supabase에서 뉴스를 가져올 수 없어 Fallback 데이터를 사용합니다.")
-                        st.session_state.news_articles = FALLBACK_NEWS
-                except Exception as e2:
-                    # 에러 발생 시 Fallback 데이터 사용
-                    print(f"⚠️ 뉴스 로드 실패: {e2}, Fallback 데이터 사용")
-                    st.session_state.news_articles = FALLBACK_NEWS
-                finally:
-                    st.session_state["news_loading"] = False
-            threading.Thread(target=_load_news_async, daemon=True).start()
+            # 에러 발생 시 Fallback 데이터 사용
+            print(f"⚠️ 뉴스 로드 실패: {e}, Fallback 데이터 사용")
+            st.session_state.news_articles = FALLBACK_NEWS
     
-    # 세션 시작 로그는 뉴스 표시 후에 기록
+    # 세션 시작 로그 (동기적으로 실행하여 user_id가 설정된 후 기록되도록 보장)
     if not st.session_state.get("session_logged", False):
-        def _log_session_async():
-            try:
-                log_event(
-                    "session_start",
-                    surface="home",
-                    payload={
-                        "ua": st.session_state.get("_browser", {}),
-                        "note": "MVP session start"
-                    }
-                )
-            except Exception:
-                pass
-        threading.Thread(target=_log_session_async, daemon=True).start()
+        try:
+            log_event(
+                "session_start",
+                surface="home",
+                payload={
+                    "ua": st.session_state.get("_browser", {}),
+                    "note": "MVP session start"
+                }
+            )
+        except Exception:
+            pass
         st.session_state.session_logged = True
     
     # 백그라운드 초기화 (용어 사전 등)
@@ -159,8 +121,8 @@ def main():
         LogViewer(show_mode="log_viewer")
         return
 
-    # ② 페이지 기본 레이아웃 분할 (7:3 비율)
-    col_main, col_chat = st.columns([7, 3])
+    # ② 페이지 기본 레이아웃 분할 (5.5:4.5 비율)
+    col_main, col_chat = st.columns([5.5, 4.5])
 
     # ③ 메인 영역 (뉴스 요약, 리스트, 상세)
     with col_main:
