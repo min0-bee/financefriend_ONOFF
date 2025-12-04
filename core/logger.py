@@ -124,31 +124,33 @@ def _get_backend_session_id() -> Optional[int]:
     return st.session_state.get("backend_session_id")
 
 
-def _get_user_id() -> str:
-    """사용자 ID를 가져옵니다 (서버 UUID 우선 사용)"""
-    # 서버 UUID가 있으면 우선 사용 (서버와 항상 동일)
-    server_user_id = st.session_state.get("backend_user_id")
-    if server_user_id:
-        return server_user_id
-    
-    # 없으면 session_state의 user_id 사용
-    user_id = st.session_state.get("user_id")
-    if user_id:
-        return user_id
-    
-    # 없으면 로컬에서 가져오기 (임시, 서버 연결 후 서버 UUID로 교체됨)
-    from core.user import get_or_create_user_id
-    return get_or_create_user_id()
+def _get_user_id(captured_user_id=None) -> str:
+    """사용자 ID를 가져옵니다 (session_state.user_id 또는 captured_user_id 사용)"""
+    # 1. 스레드에서 전달된 captured_user_id 우선 사용 (스레드 안전)
+    if captured_user_id:
+        return captured_user_id
+
+    # 2. session_state의 user_id 사용 (메인 스레드에서만 접근 가능)
+    try:
+        user_id = st.session_state.get("user_id")
+        if user_id:
+            return user_id
+    except RuntimeError:
+        # 스레드에서 호출된 경우 RuntimeError 발생 가능
+        pass
+
+    # 3. session_state에 없으면 익명 사용자 ID 반환
+    from core.config import ANONYMOUS_USER_ID
+    return ANONYMOUS_USER_ID
 
 
 def _save_server_user_id(server_user_id: str) -> None:
-    """서버에서 받은 user_id를 저장 (세션 상태, 로컬 파일, URL 파라미터)"""
+    """서버에서 받은 user_id를 저장 (참조용으로만 저장, user_id는 덮어쓰지 않음)"""
+    # backend_user_id는 서버 참조용으로만 저장
     st.session_state["backend_user_id"] = server_user_id
-    st.session_state["user_id"] = server_user_id
-    
-    # 서버 UUID를 브라우저/로컬에 동기화
-    from core.user import persist_user_id
-    persist_user_id(server_user_id)
+
+    # ⚠️ user_id는 덮어쓰지 않음 (URL/localStorage 기반 user_id 유지)
+    # user_id는 init_session_and_user()에서 URL/localStorage로 관리됨
 
 
 def _extract_user_id_from_response(users: Any) -> Optional[str]:
@@ -1527,9 +1529,11 @@ def _log_to_event_log(event_name: str, **kwargs) -> Tuple[bool, Optional[str]]:
     
     # payload: 모든 추가 정보를 JSON으로 저장 (분석용)
     payload = {}
-    
+
     # 기본 정보
-    user_id = _get_user_id()
+    # 스레드에서 전달된 captured_user_id 사용 (스레드 안전)
+    captured_user_id = kwargs.get("_captured_user_id")
+    user_id = _get_user_id(captured_user_id)
     if user_id:
         payload["user_id"] = user_id
     
@@ -1775,12 +1779,17 @@ def log_event(event_name: str, **kwargs):
     """
     # CSV 저장은 동기적으로 실행 (빠른 로컬 파일 I/O)
     _log_event_sync(event_name, **kwargs)
-    
+
     # ✅ 성능 개선: Supabase/API 호출은 비동기로 실행 (UI 블로킹 방지)
     # kwargs를 딥카피하여 스레드 안전성 보장
     import copy
     kwargs_copy = copy.deepcopy(kwargs)
-    
+
+    # ⚠️ 중요: 스레드에서는 session_state에 접근할 수 없으므로
+    # 메인 스레드에서 user_id를 미리 가져와서 kwargs에 포함
+    if "_captured_user_id" not in kwargs_copy:
+        kwargs_copy["_captured_user_id"] = _get_user_id()
+
     # 백그라운드 스레드에서 실행
     thread = threading.Thread(
         target=_log_event_async,
