@@ -47,6 +47,7 @@ financefriend_onoff/
 ├─ init.py
 ├─ styles.py # CSS 인젝션 및 테마 스타일 정의
 └─ components.py # 요약, 뉴스리스트, 기사상세, 챗봇, 사이드바, 로그뷰어 등 구성요소
+```
 
 ## 🧩 Orchestration Layer (app.py)
 
