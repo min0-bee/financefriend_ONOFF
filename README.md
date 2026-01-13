@@ -1,3 +1,27 @@
+# Finance Friend (ON/OFF)
+
+초보자를 위한 금융 뉴스 큐레이션 + 문맥 기반 용어 설명(RAG) 챗봇
+
+## Why
+금융 초보자는 ‘뉴스를 못 읽어서’가 아니라
+읽어도 무엇을 판단해야 할지 몰라 이탈한다.
+
+## What I validated
+- 초보자 기준 뉴스 선별(Impact/Urgency/Credibility)
+- 뉴스 → 용어 → 질문으로 이어지는 학습 흐름(퍼널)
+
+## What changed (Before → After)
+- 비금융 뉴스 비율 15% → 3%
+- 자극적 뉴스 비율 9.7% → 2.5%
+- 중요 뉴스(Impact 85+) 8.5% → 11.9%
+
+## Quickstart
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+
+
+
 ### 구조
 ```
 financefriend_onoff/
@@ -27,8 +51,6 @@ financefriend_onoff/
 ```
 ## 🧩 Orchestration Layer (app.py)
 
-이 프로젝트는 **조합 중심 설계(Orchestration-first)** 를 따릅니다.  
-`app.py`는 전체 화면을 조립하는 **컨트롤 타워**이며, 실제 UI 그리기는 `components/*` 모듈이 맡습니다.
 
 ### 역할 분담
 - **app.py = Orchestrator**
@@ -67,23 +89,3 @@ with col_chat:
 Sidebar(st.session_state.financial_terms)
 st.markdown("---"); LogViewer()
 ```
-
-###🎛️ Component Contract (컴포넌트 규약)
-
-- 모든 컴포넌트는 동일한 진입점을 갖습니다.
-
-- 함수형: def render(...): ...
-
-- 혹은 래퍼 함수: SummaryBox(...), NewsList(...) 등 (내부에서 render(호출)
-
-### 규칙
-- 파일 1개 = 컴포넌트 1개
-- 외부에서 모듈 단위로 import 하고 module.render() 형태로 호출(⚠️ from ... import render 금지: 이름 충돌)
-
-### ✅ 권장
-- from components import news_list
-- news_list.render(articles)
-
-### ❌ 비권장 (여러 파일의 render가 충돌)
-- from components.news_list import render
-- render(articles)
