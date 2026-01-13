@@ -4,13 +4,14 @@
 
 ## Why
 금융 초보자는 ‘뉴스를 못 읽어서’가 아니라
-읽어도 무엇을 판단해야 할지 몰라 이탈한다.
+읽어도 금융 용어가 어렵고 또 무엇을 판단해야 할지 몰라 이탈한다.
 
 ## What I validated
 - 초보자 기준 뉴스 선별(Impact/Urgency/Credibility)
 - 뉴스 → 용어 → 질문으로 이어지는 학습 흐름(퍼널)
 
 ## What changed (Before → After)
+초보자 기준 뉴스 큐레이션
 - 비금융 뉴스 비율 15% → 3%
 - 자극적 뉴스 비율 9.7% → 2.5%
 - 중요 뉴스(Impact 85+) 8.5% → 11.9%
@@ -46,9 +47,7 @@ financefriend_onoff/
 ├─ init.py
 ├─ styles.py # CSS 인젝션 및 테마 스타일 정의
 └─ components.py # 요약, 뉴스리스트, 기사상세, 챗봇, 사이드바, 로그뷰어 등 구성요소
-```
 
-```
 ## 🧩 Orchestration Layer (app.py)
 
 
